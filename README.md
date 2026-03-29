@@ -29,15 +29,14 @@ ROZ NanoBots runs in the background and automatically:
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/ROZ-nanobots.git
-cd ROZ-nanobots
-chmod +x install.sh
+git clone https://github.com/zanicool/ROZ-nanobots-for-your-pc-.git
+cd ROZ-nanobots-for-your-pc-
 sudo ./install.sh
 ```
 
-This installs NanoBots as a systemd service that:
+This installs NanoBots to `/opt/nanobot` as a systemd service that:
 - Starts automatically on boot (early boot stage)
-- Restarts itself if it crashes
+- Restarts itself in 5 seconds if it crashes
 - Runs a healing cycle every hour
 
 ## Usage
@@ -50,7 +49,13 @@ sudo systemctl status nanobot
 sudo journalctl -u nanobot -f
 
 # View lifetime stats dashboard
-python3 nanobot.py status
+python3 /opt/nanobot/nanobot.py status
+```
+
+## Uninstall
+
+```bash
+sudo ./uninstall.sh
 ```
 
 ## Requirements
