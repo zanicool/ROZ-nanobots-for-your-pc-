@@ -1,0 +1,14 @@
+[Unit]
+Description=NanoBot - Self-healing system daemon
+DefaultDependencies=no
+After=sysinit.target
+Before=basic.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/zani/nanobots/nanobot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=sysinit.target
