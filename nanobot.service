@@ -1,14 +1,17 @@
 [Unit]
-Description=NanoBot - Self-healing system daemon
+Description=ROZ NanoBots v5 - Self-healing system daemon
 DefaultDependencies=no
-After=sysinit.target
+After=sysinit.target network-online.target
+Wants=network-online.target
 Before=basic.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/zani/nanobots/nanobot.py
+ExecStart=/usr/bin/python3 /opt/nanobot/nanobot.py
 Restart=always
 RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
 
 [Install]
 WantedBy=sysinit.target
