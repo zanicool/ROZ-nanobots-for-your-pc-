@@ -21,7 +21,7 @@ DEFAULT_CONFIG = {
     "realtime_interval": 30,
     "log_file": "/var/log/nanobot.log",
     "stats_file": "/var/log/nanobot_stats.json",
-    "enable_updates": True,
+    "enable_updates": False,
     "enable_security": True,
     "enable_smart": True,
     "critical_services": ["systemd-journald", "systemd-logind", "dbus", "cron"],
@@ -246,6 +246,16 @@ def run(cmd, timeout=120):
     except Exception as e:
         log.warning(f"Command error: {cmd}: {e}")
         return 1, ""
+
+
+DANGEROUS_CMDS = ["kill", "rm ", "remove", "purge", "delete", "mkswap", "swapon"]
+
+def safe_run(cmd, timeout=120):
+    """Run a potentially destructive command with extra logging."""
+    cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+    if any(d in cmd_str for d in DANGEROUS_CMDS):
+        log.info(f"[SAFE] Executing destructive command: {cmd_str}")
+    return run(cmd, timeout)
 
 
 # --- Package Healing ---
@@ -478,7 +488,7 @@ def check_disk_space():
             "find /var/tmp -type f -atime +3 -delete 2>/dev/null",
             "find /var/log -name '*.gz' -delete 2>/dev/null",
             "find /var/crash -type f -delete 2>/dev/null",
-            "find /home -name '*.core' -delete 2>/dev/null",
+            "find /home -name '*.core' -mtime +7 -delete 2>/dev/null",
             "apt-get autoremove -y",
         ]:
             run(cmd)
@@ -557,11 +567,14 @@ def kill_zombies():
             pid = pid.strip()
             if not pid:
                 continue
+            # Never kill PID 1 or kernel threads
+            if pid in ("1", "2"):
+                continue
             log.warning(f"Killing zombie PID {pid}")
             _, ppid = run(f"ps -o ppid= -p {pid} 2>/dev/null")
             if ppid and ppid.strip():
                 run(f"kill -SIGCHLD {ppid.strip()} 2>/dev/null")
-            run(f"kill -9 {pid} 2>/dev/null")
+            safe_run(f"kill -9 {pid} 2>/dev/null")
             track("zombies_killed")
     else:
         log.info("No zombies.")
@@ -577,8 +590,11 @@ def check_high_cpu():
                 continue
             pid, name, cpu = parts[0], parts[1], parts[2]
             # Don't kill critical system processes
-            if name in ("python3", "Xorg", "gnome-shell", "kwin", "systemd"):
-                log.warning(f"High CPU: PID {pid} ({name}) at {cpu}% — skipping (critical).")
+            if name in ("python3", "Xorg", "gnome-shell", "kwin", "systemd",
+                        "cinnamon", "mutter", "nemo", "pulseaudio", "pipewire",
+                        "NetworkManager", "dbus-daemon", "systemd-journald",
+                        "firefox", "firefox-bin", "blender", "kiro", "kiro-cli"):
+                log.warning(f"High CPU: PID {pid} ({name}) at {cpu}% — skipping (protected).")
                 continue
             log.warning(f"High CPU: PID {pid} ({name}) at {cpu}%")
             # Check if it's been high for more than 5 minutes
