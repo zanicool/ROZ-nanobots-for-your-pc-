@@ -55,6 +55,11 @@ DEFAULT_CONFIG = {
     "enable_bluetooth_heal": True,
     "enable_cron_heal": True,
     "enable_tmpfiles": True,
+    "enable_antivirus": True,
+    "enable_rootkit_check": True,
+    "enable_desktop_heal": True,
+    "enable_flatpak_heal": True,
+    "antivirus_scan_dirs": ["/home", "/tmp", "/var/tmp"],
     "ssh_max_failed_per_hour": 50,
     "watched_configs": ["/etc/passwd", "/etc/shadow", "/etc/group", "/etc/sudoers", "/etc/ssh/sshd_config", "/etc/fstab"],
     "max_connections_per_ip": 50,
@@ -125,6 +130,8 @@ def load_stats():
         "hostname_fixes": 0, "locale_fixes": 0, "xorg_fixes": 0,
         "audio_fixes": 0, "bluetooth_fixes": 0, "cron_fixes": 0,
         "tmpfile_fixes": 0,
+        "viruses_found": 0, "rootkits_checked": 0,
+        "desktop_fixes": 0, "flatpak_fixes": 0,
         "last_run": None, "uptime_start": datetime.now().isoformat(),
     }
     try:
@@ -1251,6 +1258,128 @@ def check_tmpfiles():
     log.info("Tmpfiles check done.")
 
 
+# --- Antivirus Scanning ---
+
+def check_antivirus():
+    if not cfg["enable_antivirus"]:
+        return
+    if not shutil.which("clamscan"):
+        return
+    log.info("Running antivirus scan...")
+    # Update virus definitions first
+    run("freshclam --quiet 2>/dev/null", timeout=300)
+    for scan_dir in cfg.get("antivirus_scan_dirs", ["/home", "/tmp"]):
+        if not os.path.isdir(scan_dir):
+            continue
+        _, out = run(f"clamscan -r -i --no-summary --max-filesize=50M --max-scansize=200M '{scan_dir}' 2>/dev/null", timeout=600)
+        if out:
+            log.warning(f"VIRUSES FOUND:\n{out}")
+            # Quarantine infected files
+            quarantine = "/var/log/nanobot_quarantine"
+            os.makedirs(quarantine, exist_ok=True)
+            for line in out.splitlines():
+                if ": " in line and "FOUND" in line:
+                    infected = line.split(":")[0].strip()
+                    if os.path.exists(infected):
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        dest = f"{quarantine}/{os.path.basename(infected)}.{ts}"
+                        run(f"mv '{infected}' '{dest}'")
+                        run(f"chmod 000 '{dest}'")
+                        log.warning(f"Quarantined: {infected} -> {dest}")
+                        track("viruses_found")
+    log.info("Antivirus scan done.")
+
+
+# --- Rootkit Detection ---
+
+def check_rootkits():
+    if not cfg["enable_rootkit_check"]:
+        return
+    log.info("Checking for rootkits...")
+    if shutil.which("chkrootkit"):
+        _, out = run("chkrootkit -q 2>/dev/null", timeout=300)
+        if out and "INFECTED" in out:
+            log.warning(f"ROOTKIT DETECTED:\n{out}")
+            track("rootkits_checked")
+        else:
+            log.info("chkrootkit: clean")
+    if shutil.which("rkhunter"):
+        run("rkhunter --propupd --quiet 2>/dev/null")
+        rc, out = run("rkhunter --check --skip-keypress --quiet 2>/dev/null", timeout=300)
+        if rc != 0 and out:
+            warnings = [l for l in out.splitlines() if "Warning" in l]
+            if warnings:
+                log.warning(f"rkhunter warnings:\n" + "\n".join(warnings[:10]))
+                track("rootkits_checked")
+        else:
+            log.info("rkhunter: clean")
+    if not shutil.which("chkrootkit") and not shutil.which("rkhunter"):
+        log.info("No rootkit scanner installed. Install with: sudo apt install chkrootkit rkhunter")
+    log.info("Rootkit check done.")
+
+
+# --- Desktop / Window Manager Healing ---
+
+def check_desktop():
+    if not cfg["enable_desktop_heal"]:
+        return
+    log.info("Checking desktop...")
+    _, de = run("echo $XDG_CURRENT_DESKTOP")
+    if not de:
+        _, de = run("cat /etc/X11/default-display-manager 2>/dev/null")
+    # Check if display manager is running
+    for dm in ["lightdm", "gdm", "sddm"]:
+        _, active = run(f"systemctl is-active {dm} 2>/dev/null")
+        if active == "active":
+            break
+    else:
+        # No display manager found active, might be fine if using startx
+        pass
+    # Check for frozen Cinnamon
+    if "Cinnamon" in (de or "") or "X-Cinnamon" in (de or ""):
+        _, out = run("dbus-send --session --dest=org.Cinnamon --print-reply /org/Cinnamon org.freedesktop.DBus.Peer.Ping 2>/dev/null")
+        if "Error" in (out or ""):
+            log.warning("Cinnamon not responding! Restarting...")
+            run("nohup cinnamon --replace &>/dev/null &")
+            track("desktop_fixes")
+    # Check for Xorg crash
+    if os.path.exists("/var/log/Xorg.0.log.old"):
+        _, age = run("stat -c %Y /var/log/Xorg.0.log.old 2>/dev/null")
+        if age and age.isdigit() and (time.time() - int(age)) < 300:
+            log.warning("Xorg crashed recently!")
+            track("desktop_fixes")
+    log.info("Desktop check done.")
+
+
+# --- Flatpak / Snap Healing ---
+
+def check_flatpak():
+    if not cfg["enable_flatpak_heal"]:
+        return
+    log.info("Checking Flatpak/Snap...")
+    if shutil.which("flatpak"):
+        rc, out = run("flatpak repair --user 2>&1", timeout=120)
+        if "error" in (out or "").lower():
+            log.warning(f"Flatpak repair issues:\n{out[:300]}")
+            run("flatpak repair --user --reinstall-all 2>/dev/null", timeout=300)
+            track("flatpak_fixes")
+        # Clean unused runtimes
+        run("flatpak uninstall --unused -y 2>/dev/null")
+    if shutil.which("snap"):
+        _, out = run("snap changes 2>/dev/null | grep -i error | tail -5")
+        if out:
+            log.warning(f"Snap errors:\n{out}")
+            # Try to abort stuck snap changes
+            _, changes = run("snap changes 2>/dev/null | awk '/Doing/{print $1}'")
+            if changes:
+                for cid in changes.splitlines():
+                    cid = cid.strip()
+                    if cid:
+                        run(f"snap abort {cid} 2>/dev/null")
+            track("flatpak_fixes")
+    log.info("Flatpak/Snap check done.")
+
+
 # --- Status Dashboard ---
 
 def show_status():
@@ -1305,6 +1434,10 @@ def show_status():
         ("Bluetooth fixes", "bluetooth_fixes"),
         ("Cron fixes", "cron_fixes"),
         ("Tmpfile fixes", "tmpfile_fixes"),
+        ("Viruses found", "viruses_found"),
+        ("Rootkit checks", "rootkits_checked"),
+        ("Desktop fixes", "desktop_fixes"),
+        ("Flatpak/Snap fixes", "flatpak_fixes"),
     ]
 
     w = 48
@@ -1356,6 +1489,8 @@ def heal_full():
         check_broken_symlinks, check_hostname,
         check_locale, check_xorg, check_audio,
         check_bluetooth, check_cron, check_tmpfiles,
+        check_antivirus, check_rootkits,
+        check_desktop, check_flatpak,
     ]:
         if shutdown_requested:
             log.info("Shutdown requested, stopping heal cycle.")
