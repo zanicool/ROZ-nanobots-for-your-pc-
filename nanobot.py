@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """ROZ NanoBots v7 - Self-healing Linux system daemon."""
 
-import subprocess
-import logging
-import time
-import shutil
-import os
-import sys
 import json
-import signal
+import logging
+import os
 import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -149,7 +149,7 @@ log_dir = os.path.dirname(cfg["log_file"])
 if log_dir and not os.path.isdir(log_dir):
     os.makedirs(log_dir, exist_ok=True)
 
-handlers = [logging.StreamHandler()]
+handlers: list[logging.Handler] = [logging.StreamHandler()]
 try:
     handlers.append(logging.FileHandler(cfg["log_file"]))
 except (PermissionError, OSError):
@@ -520,7 +520,7 @@ def check_inodes():
 
 # --- Service Healing ---
 
-restart_counts = {}
+restart_counts: dict[str, int] = {}
 
 def check_failed_services():
     log.info("Checking failed services...")
@@ -972,7 +972,7 @@ def check_intrusions():
 
 # --- Config File Watchdog ---
 
-config_hashes = {}
+config_hashes: dict[str, str] = {}
 
 def check_config_watchdog():
     if not cfg["enable_config_watchdog"]:
@@ -1399,9 +1399,9 @@ def check_rootkits():
         run("rkhunter --propupd --quiet 2>/dev/null")
         rc, out = run("rkhunter --check --skip-keypress --quiet 2>/dev/null", timeout=300)
         if rc != 0 and out:
-            warnings = [l for l in out.splitlines() if "Warning" in l]
+            warnings = [line for line in out.splitlines() if "Warning" in line]
             if warnings:
-                log.warning(f"rkhunter warnings:\n" + "\n".join(warnings[:10]))
+                log.warning("rkhunter warnings:\n" + "\n".join(warnings[:10]))
                 track("rootkits_checked")
         else:
             log.info("rkhunter: clean")
@@ -2457,16 +2457,26 @@ def check_kernel_taint():
     if out and out.strip() != "0":
         flags = int(out.strip())
         reasons = []
-        if flags & 1: reasons.append("proprietary module")
-        if flags & 2: reasons.append("module force loaded")
-        if flags & 4: reasons.append("SMP unsafe")
-        if flags & 8: reasons.append("module force unloaded")
-        if flags & 16: reasons.append("MCE")
-        if flags & 32: reasons.append("bad page")
-        if flags & 64: reasons.append("userspace taint")
-        if flags & 128: reasons.append("kernel died")
-        if flags & 256: reasons.append("ACPI overridden")
-        if flags & 512: reasons.append("warning occurred")
+        if flags & 1:
+            reasons.append("proprietary module")
+        if flags & 2:
+            reasons.append("module force loaded")
+        if flags & 4:
+            reasons.append("SMP unsafe")
+        if flags & 8:
+            reasons.append("module force unloaded")
+        if flags & 16:
+            reasons.append("MCE")
+        if flags & 32:
+            reasons.append("bad page")
+        if flags & 64:
+            reasons.append("userspace taint")
+        if flags & 128:
+            reasons.append("kernel died")
+        if flags & 256:
+            reasons.append("ACPI overridden")
+        if flags & 512:
+            reasons.append("warning occurred")
         log.warning(f"Kernel tainted ({flags}): {', '.join(reasons)}")
     log.info("Taint check done.")
 
@@ -2492,10 +2502,10 @@ def check_network_errors():
     log.info("Checking network interface errors...")
     _, out = run("ip -s link show | grep -A1 'RX:' | grep -v 'RX:' | awk '{if($3>0 || $4>0) print}'")
     if out:
-        log.warning(f"Network interface errors detected")
+        log.warning("Network interface errors detected")
     _, out = run("ip -s link show | grep -A1 'TX:' | grep -v 'TX:' | awk '{if($3>0 || $4>0) print}'")
     if out:
-        log.warning(f"Network TX errors detected")
+        log.warning("Network TX errors detected")
     log.info("Network error check done.")
 
 
@@ -3052,7 +3062,7 @@ def check_systemd_inhibitors():
     log.info("Checking systemd inhibitors...")
     _, out = run("systemd-inhibit --list --no-pager 2>/dev/null")
     if out:
-        inhibitors = len([l for l in out.splitlines() if l.strip() and "WHO" not in l and "inhibitor" not in l.lower()])
+        inhibitors = len([x for x in out.splitlines() if x.strip() and "WHO" not in x and "inhibitor" not in x.lower()])
         if inhibitors > 5:
             log.warning(f"Many systemd inhibitors: {inhibitors}")
     log.info("Inhibitor check done.")
