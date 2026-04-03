@@ -60,6 +60,23 @@ DEFAULT_CONFIG = {
     "enable_desktop_heal": True,
     "enable_flatpak_heal": True,
     "antivirus_scan_dirs": ["/home", "/tmp", "/var/tmp"],
+    "enable_backup": True,
+    "enable_port_scan_protect": True,
+    "enable_login_monitor": True,
+    "enable_ppa_heal": True,
+    "enable_font_heal": True,
+    "enable_printer_heal": True,
+    "enable_suspend_heal": True,
+    "enable_clock_drift": True,
+    "enable_zombie_parent_heal": True,
+    "enable_oom_score": True,
+    "enable_sysctl_heal": True,
+    "enable_apt_source_heal": True,
+    "enable_user_integrity": True,
+    "enable_mount_heal": True,
+    "backup_dirs": ["/home/zani/Documents", "/home/zani/republicofzani/src", "/home/zani/nanobots"],
+    "backup_dest": "/var/backups/nanobot_backups",
+    "backup_keep_days": 30,
     "ssh_max_failed_per_hour": 50,
     "watched_configs": ["/etc/passwd", "/etc/shadow", "/etc/group", "/etc/sudoers", "/etc/ssh/sshd_config", "/etc/fstab"],
     "max_connections_per_ip": 50,
@@ -132,6 +149,13 @@ def load_stats():
         "tmpfile_fixes": 0,
         "viruses_found": 0, "rootkits_checked": 0,
         "desktop_fixes": 0, "flatpak_fixes": 0,
+        "backups_made": 0, "port_scan_blocks": 0,
+        "suspicious_logins": 0, "ppa_fixes": 0,
+        "font_fixes": 0, "printer_fixes": 0,
+        "suspend_fixes": 0, "clock_fixes": 0,
+        "zombie_parent_fixes": 0, "oom_score_fixes": 0,
+        "sysctl_fixes": 0, "apt_source_fixes": 0,
+        "user_integrity_fixes": 0, "mount_fixes": 0,
         "last_run": None, "uptime_start": datetime.now().isoformat(),
     }
     try:
@@ -1380,6 +1404,311 @@ def check_flatpak():
     log.info("Flatpak/Snap check done.")
 
 
+# --- Automatic Backups ---
+
+def check_backup():
+    if not cfg["enable_backup"]:
+        return
+    log.info("Running backups...")
+    dest = cfg["backup_dest"]
+    os.makedirs(dest, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    for src in cfg.get("backup_dirs", []):
+        if not os.path.isdir(src):
+            continue
+        name = os.path.basename(src.rstrip("/"))
+        archive = f"{dest}/{name}_{ts}.tar.gz"
+        rc, _ = run(f"tar czf '{archive}' -C '{os.path.dirname(src)}' '{name}' 2>/dev/null", timeout=300)
+        if rc == 0:
+            log.info(f"Backed up {src} -> {archive}")
+            track("backups_made")
+        else:
+            log.warning(f"Backup failed for {src}")
+    keep = cfg.get("backup_keep_days", 30)
+    run(f"find '{dest}' -name '*.tar.gz' -mtime +{keep} -delete 2>/dev/null")
+    log.info("Backup done.")
+
+
+# --- Port Scan Protection ---
+
+def check_port_scan_protect():
+    if not cfg["enable_port_scan_protect"]:
+        return
+    log.info("Checking for port scans...")
+    _, out = run("journalctl --since '10 min ago' --grep='SYN' --no-pager -q 2>/dev/null | wc -l")
+    if out and out.isdigit() and int(out) > 100:
+        log.warning(f"Possible port scan: {out} SYN packets in 10 min!")
+        run("sysctl -w net.ipv4.tcp_syncookies=1")
+        run("sysctl -w net.ipv4.icmp_echo_ignore_broadcasts=1")
+        run("sysctl -w net.ipv4.conf.all.log_martians=1")
+        track("port_scan_blocks")
+    log.info("Port scan check done.")
+
+
+# --- Login Monitor ---
+
+def check_login_monitor():
+    if not cfg["enable_login_monitor"]:
+        return
+    log.info("Checking logins...")
+    _, out = run("last -n 20 --time-format iso 2>/dev/null")
+    if out:
+        for line in out.splitlines():
+            if not line.strip() or "reboot" in line or "wtmp" in line:
+                continue
+            parts = line.split()
+            if len(parts) >= 3:
+                user, terminal = parts[0], parts[1]
+                if "pts/" in terminal and len(parts) > 2:
+                    ip = parts[2]
+                    if ip and ip not in ("", ":0", "0.0.0.0") and not ip.startswith("10.") and not ip.startswith("192.168."):
+                        log.warning(f"External login: {user} from {ip} on {terminal}")
+                        track("suspicious_logins")
+    _, out = run("journalctl --since '1 hour ago' --grep='FAILED su' --no-pager -q 2>/dev/null | tail -5")
+    if out:
+        log.warning(f"Failed su attempts:\n{out}")
+        track("suspicious_logins")
+    log.info("Login check done.")
+
+
+# --- PPA / Repository Healing ---
+
+def check_ppa_heal():
+    if not cfg["enable_ppa_heal"]:
+        return
+    log.info("Checking APT repositories...")
+    rc, out = run("apt-get update 2>&1 | grep -iE 'err|fail|expired|no longer has'", timeout=120)
+    if out:
+        log.warning(f"Broken repos:\n{out[:500]}")
+        for line in out.splitlines():
+            match = re.search(r'(https?://[^\s]+)', line)
+            if match:
+                url = match.group(1)
+                _, files = run(f"grep -rl '{url}' /etc/apt/sources.list.d/ 2>/dev/null")
+                if files:
+                    for f in files.splitlines():
+                        f = f.strip()
+                        if f and not f.endswith(".disabled"):
+                            run(f"mv '{f}' '{f}.disabled'")
+                            log.warning(f"Disabled broken repo: {f}")
+                            track("ppa_fixes")
+        run("apt-get update 2>/dev/null", timeout=120)
+    log.info("PPA check done.")
+
+
+# --- Font Healing ---
+
+def check_fonts():
+    if not cfg["enable_font_heal"]:
+        return
+    log.info("Checking fonts...")
+    _, out = run("fc-list 2>/dev/null | wc -l")
+    if out and out.isdigit() and int(out) < 10:
+        log.warning(f"Only {out} fonts found! Rebuilding cache...")
+        run("fc-cache -fv 2>/dev/null")
+        track("font_fixes")
+    cache_dir = os.path.expanduser("~/.cache/fontconfig")
+    if not os.path.isdir(cache_dir):
+        run("fc-cache -fv 2>/dev/null")
+        track("font_fixes")
+    log.info("Font check done.")
+
+
+# --- Printer Healing ---
+
+def check_printer():
+    if not cfg["enable_printer_heal"]:
+        return
+    if not shutil.which("lpstat"):
+        return
+    log.info("Checking printers...")
+    _, out = run("systemctl is-active cups 2>/dev/null")
+    if out == "failed":
+        log.warning("CUPS failed! Restarting...")
+        run("systemctl restart cups")
+        track("printer_fixes")
+    _, out = run("lpstat -o 2>/dev/null")
+    if out and len(out.splitlines()) > 10:
+        log.warning(f"{len(out.splitlines())} stuck print jobs! Cancelling...")
+        run("cancel -a 2>/dev/null")
+        track("printer_fixes")
+    log.info("Printer check done.")
+
+
+# --- Suspend/Resume Healing ---
+
+def check_suspend():
+    if not cfg["enable_suspend_heal"]:
+        return
+    log.info("Checking suspend/resume...")
+    _, errors = run("journalctl -b --grep='PM:.*failed\\|resume.*error' --no-pager -q 2>/dev/null | tail -5")
+    if errors:
+        log.warning(f"Suspend/resume errors:\n{errors[:300]}")
+        for svc in ["NetworkManager", "bluetooth", "pulseaudio"]:
+            run(f"systemctl restart {svc} 2>/dev/null")
+        track("suspend_fixes")
+    log.info("Suspend check done.")
+
+
+# --- Clock Drift Detection ---
+
+def check_clock_drift():
+    if not cfg["enable_clock_drift"]:
+        return
+    log.info("Checking clock drift...")
+    _, out = run("timedatectl show --property=NTPSynchronized --value 2>/dev/null")
+    if out == "no":
+        log.warning("Clock not synced!")
+        run("timedatectl set-ntp true")
+        run("systemctl restart systemd-timesyncd 2>/dev/null")
+        run("ntpdate pool.ntp.org 2>/dev/null || chronyc makestep 2>/dev/null")
+        track("clock_fixes")
+    log.info("Clock drift check done.")
+
+
+# --- Zombie Parent Healing ---
+
+def check_zombie_parents():
+    if not cfg["enable_zombie_parent_heal"]:
+        return
+    log.info("Checking zombie parent processes...")
+    _, out = run("ps aux | awk '$8==\"Z\" {print $2}'")
+    if not out:
+        return
+    for zpid in out.splitlines():
+        zpid = zpid.strip()
+        if not zpid:
+            continue
+        _, ppid = run(f"ps -o ppid= -p {zpid} 2>/dev/null")
+        ppid = ppid.strip() if ppid else ""
+        if ppid and ppid != "1":
+            _, pname = run(f"ps -o comm= -p {ppid} 2>/dev/null")
+            log.warning(f"Zombie PID {zpid} parent {ppid} ({pname}). Sending SIGCHLD...")
+            run(f"kill -SIGCHLD {ppid}")
+            time.sleep(2)
+            rc, _ = run(f"ps -p {zpid} 2>/dev/null")
+            if rc == 0:
+                log.warning(f"Parent {ppid} not reaping. Killing parent...")
+                run(f"kill -15 {ppid}")
+                track("zombie_parent_fixes")
+
+
+# --- OOM Score Protection ---
+
+def check_oom_scores():
+    if not cfg["enable_oom_score"]:
+        return
+    log.info("Checking OOM scores...")
+    critical = ["sshd", "systemd-journald", "dbus-daemon", "cron"]
+    for proc in critical:
+        _, pids = run(f"pgrep {proc} 2>/dev/null")
+        if pids:
+            for pid in pids.splitlines():
+                pid = pid.strip()
+                if pid:
+                    try:
+                        oom_file = f"/proc/{pid}/oom_score_adj"
+                        current = Path(oom_file).read_text().strip()
+                        if current != "-1000":
+                            Path(oom_file).write_text("-1000")
+                            track("oom_score_fixes")
+                    except (OSError, PermissionError):
+                        pass
+    log.info("OOM scores OK.")
+
+
+# --- Sysctl Hardening ---
+
+def check_sysctl():
+    if not cfg["enable_sysctl_heal"]:
+        return
+    log.info("Checking sysctl settings...")
+    hardened = {
+        "net.ipv4.tcp_syncookies": "1",
+        "net.ipv4.conf.all.rp_filter": "1",
+        "net.ipv4.conf.all.accept_redirects": "0",
+        "net.ipv4.conf.all.send_redirects": "0",
+        "net.ipv4.icmp_echo_ignore_broadcasts": "1",
+        "net.ipv4.conf.all.accept_source_route": "0",
+        "kernel.randomize_va_space": "2",
+        "fs.protected_hardlinks": "1",
+        "fs.protected_symlinks": "1",
+    }
+    for key, expected in hardened.items():
+        _, val = run(f"sysctl -n {key} 2>/dev/null")
+        if val and val.strip() != expected:
+            run(f"sysctl -w {key}={expected} 2>/dev/null")
+            log.info(f"Hardened {key}: {val} -> {expected}")
+            track("sysctl_fixes")
+    log.info("Sysctl check done.")
+
+
+# --- APT Source Integrity ---
+
+def check_apt_sources():
+    if not cfg["enable_apt_source_heal"]:
+        return
+    log.info("Checking APT source integrity...")
+    _, out = run("apt-get update 2>&1 | grep -i 'duplicate'")
+    if out:
+        log.warning(f"Duplicate APT sources:\n{out[:300]}")
+        track("apt_source_fixes")
+    _, out = run("apt-key list 2>&1 | grep -i 'expired'")
+    if out:
+        log.warning(f"Expired APT keys:\n{out[:300]}")
+        run("apt-key adv --refresh-keys --keyserver keyserver.ubuntu.com 2>/dev/null")
+        track("apt_source_fixes")
+    log.info("APT source check done.")
+
+
+# --- User Account Integrity ---
+
+def check_user_integrity():
+    if not cfg["enable_user_integrity"]:
+        return
+    log.info("Checking user integrity...")
+    _, out = run("awk -F: '$3==0 && $1!=\"root\" {print $1}' /etc/passwd")
+    if out:
+        log.warning(f"Non-root UID 0 accounts: {out}")
+        track("user_integrity_fixes")
+    _, out = run("awk -F: '$2==\"\" {print $1}' /etc/shadow 2>/dev/null")
+    if out:
+        log.warning(f"Users with empty passwords: {out}")
+        track("user_integrity_fixes")
+    _, out = run("awk -F: '$3>=1000 && $3<65534 {print $1, $6}' /etc/passwd")
+    if out:
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and not os.path.isdir(parts[1]):
+                log.warning(f"User {parts[0]} missing home dir: {parts[1]}")
+                run(f"mkhomedir_helper {parts[0]} 2>/dev/null")
+                track("user_integrity_fixes")
+    log.info("User integrity check done.")
+
+
+# --- Mount Point Healing ---
+
+def check_mounts():
+    if not cfg["enable_mount_heal"]:
+        return
+    log.info("Checking mount points...")
+    _, out = run("mount | grep -E 'nfs|cifs|smbfs'")
+    if out:
+        for line in out.splitlines():
+            mp = line.split(" on ")[1].split(" type ")[0] if " on " in line else ""
+            if mp:
+                rc, _ = run(f"stat -t '{mp}' 2>/dev/null", timeout=5)
+                if rc != 0:
+                    log.warning(f"Stale mount: {mp}. Unmounting...")
+                    run(f"umount -l '{mp}' 2>/dev/null")
+                    track("mount_fixes")
+    _, out = run("df -h | grep tmpfs | awk '$5+0 > 90 {print $6, $5}'")
+    if out:
+        log.warning(f"tmpfs nearly full:\n{out}")
+        track("mount_fixes")
+    log.info("Mount check done.")
+
+
 # --- Status Dashboard ---
 
 def show_status():
@@ -1438,6 +1767,20 @@ def show_status():
         ("Rootkit checks", "rootkits_checked"),
         ("Desktop fixes", "desktop_fixes"),
         ("Flatpak/Snap fixes", "flatpak_fixes"),
+        ("Backups made", "backups_made"),
+        ("Port scan blocks", "port_scan_blocks"),
+        ("Suspicious logins", "suspicious_logins"),
+        ("PPA fixes", "ppa_fixes"),
+        ("Font fixes", "font_fixes"),
+        ("Printer fixes", "printer_fixes"),
+        ("Suspend fixes", "suspend_fixes"),
+        ("Clock fixes", "clock_fixes"),
+        ("Zombie parent fixes", "zombie_parent_fixes"),
+        ("OOM score fixes", "oom_score_fixes"),
+        ("Sysctl fixes", "sysctl_fixes"),
+        ("APT source fixes", "apt_source_fixes"),
+        ("User integrity fixes", "user_integrity_fixes"),
+        ("Mount fixes", "mount_fixes"),
     ]
 
     w = 48
@@ -1491,6 +1834,13 @@ def heal_full():
         check_bluetooth, check_cron, check_tmpfiles,
         check_antivirus, check_rootkits,
         check_desktop, check_flatpak,
+        check_backup, check_port_scan_protect,
+        check_login_monitor, check_ppa_heal,
+        check_fonts, check_printer,
+        check_suspend, check_clock_drift,
+        check_zombie_parents, check_oom_scores,
+        check_sysctl, check_apt_sources,
+        check_user_integrity, check_mounts,
     ]:
         if shutdown_requested:
             log.info("Shutdown requested, stopping heal cycle.")
