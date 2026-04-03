@@ -77,6 +77,41 @@ DEFAULT_CONFIG = {
     "backup_dirs": ["/home/zani/Documents", "/home/zani/republicofzani/src", "/home/zani/nanobots"],
     "backup_dest": "/var/backups/nanobot_backups",
     "backup_keep_days": 30,
+    "enable_arp_spoof_detect": True,
+    "enable_dns_leak_check": True,
+    "enable_open_file_limit": True,
+    "enable_kernel_module_check": True,
+    "enable_cgroup_heal": True,
+    "enable_dmesg_monitor": True,
+    "enable_gpu_temp": True,
+    "enable_fan_monitor": True,
+    "enable_lid_switch": True,
+    "enable_screen_lock": True,
+    "enable_ssh_harden": True,
+    "enable_failed_mount_retry": True,
+    "enable_disk_smart_selftest": True,
+    "enable_network_speed": True,
+    "enable_mac_spoof_detect": True,
+    "enable_process_limit": True,
+    "enable_file_descriptor_heal": True,
+    "enable_shared_memory_heal": True,
+    "enable_semaphore_heal": True,
+    "enable_dbus_heal": True,
+    "enable_polkit_heal": True,
+    "enable_apparmor_check": True,
+    "enable_grub_password_check": True,
+    "enable_core_pattern_check": True,
+    "enable_module_blacklist": True,
+    "enable_ipv6_check": True,
+    "enable_disk_scheduler": True,
+    "enable_numa_balance": True,
+    "enable_hugepages_check": True,
+    "enable_tcp_tuning": True,
+    "enable_io_scheduler_heal": True,
+    "enable_watchdog_check": True,
+    "enable_acpi_check": True,
+    "enable_display_manager_heal": True,
+    "enable_xdg_dirs_check": True,
     "ssh_max_failed_per_hour": 50,
     "watched_configs": ["/etc/passwd", "/etc/shadow", "/etc/group", "/etc/sudoers", "/etc/ssh/sshd_config", "/etc/fstab"],
     "max_connections_per_ip": 50,
@@ -156,6 +191,23 @@ def load_stats():
         "zombie_parent_fixes": 0, "oom_score_fixes": 0,
         "sysctl_fixes": 0, "apt_source_fixes": 0,
         "user_integrity_fixes": 0, "mount_fixes": 0,
+        "arp_spoof_detects": 0, "dns_leak_fixes": 0,
+        "open_file_fixes": 0, "kernel_module_fixes": 0,
+        "cgroup_fixes": 0, "dmesg_warnings": 0,
+        "gpu_temp_warnings": 0, "fan_warnings": 0,
+        "lid_switch_fixes": 0, "screen_lock_fixes": 0,
+        "ssh_hardens": 0, "failed_mount_retries": 0,
+        "smart_selftests": 0, "network_speed_warnings": 0,
+        "mac_spoof_detects": 0, "process_limit_fixes": 0,
+        "fd_fixes": 0, "shm_fixes": 0, "sem_fixes": 0,
+        "dbus_fixes": 0, "polkit_fixes": 0,
+        "apparmor_fixes": 0, "grub_password_warnings": 0,
+        "core_pattern_fixes": 0, "module_blacklist_fixes": 0,
+        "ipv6_fixes": 0, "disk_scheduler_fixes": 0,
+        "numa_fixes": 0, "hugepage_fixes": 0,
+        "tcp_tuning_fixes": 0, "io_scheduler_fixes": 0,
+        "watchdog_fixes": 0, "acpi_fixes": 0,
+        "dm_fixes": 0, "xdg_fixes": 0,
         "last_run": None, "uptime_start": datetime.now().isoformat(),
     }
     try:
@@ -1709,6 +1761,607 @@ def check_mounts():
     log.info("Mount check done.")
 
 
+# --- ARP Spoof Detection ---
+
+def check_arp_spoof():
+    if not cfg["enable_arp_spoof_detect"]:
+        return
+    log.info("Checking ARP table...")
+    _, out = run("ip neigh show | awk '{print $5}' | sort | uniq -d")
+    if out:
+        log.warning(f"Duplicate MACs in ARP table (possible ARP spoof):\n{out}")
+        track("arp_spoof_detects")
+    log.info("ARP check done.")
+
+
+# --- DNS Leak Check ---
+
+def check_dns_leak():
+    if not cfg["enable_dns_leak_check"]:
+        return
+    log.info("Checking DNS config...")
+    _, out = run("resolvectl status 2>/dev/null | grep 'DNS Servers' | head -5")
+    if not out:
+        _, out = run("cat /etc/resolv.conf | grep nameserver")
+    if out:
+        for line in out.splitlines():
+            if any(x in line for x in ["8.8.8.8", "1.1.1.1", "9.9.9.9"]):
+                continue
+            if re.search(r'\b(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)', line):
+                continue
+            log.info(f"DNS: {line.strip()}")
+    log.info("DNS leak check done.")
+
+
+# --- Open File Limit ---
+
+def check_open_file_limit():
+    if not cfg["enable_open_file_limit"]:
+        return
+    log.info("Checking open file limits...")
+    _, out = run("cat /proc/sys/fs/file-nr")
+    if out:
+        parts = out.split()
+        if len(parts) >= 3:
+            used, maximum = int(parts[0]), int(parts[2])
+            pct = used / maximum * 100
+            if pct > 80:
+                log.warning(f"Open files at {pct:.0f}%! ({used}/{maximum})")
+                run("sysctl -w fs.file-max=2097152")
+                track("open_file_fixes")
+    log.info("Open file limit check done.")
+
+
+# --- Kernel Module Integrity ---
+
+def check_kernel_modules():
+    if not cfg["enable_kernel_module_check"]:
+        return
+    log.info("Checking kernel modules...")
+    _, out = run("dmesg 2>/dev/null | grep -i 'module verification failed'")
+    if out:
+        log.warning(f"Unsigned kernel modules:\n{out[:300]}")
+        track("kernel_module_fixes")
+    _, out = run("lsmod | awk 'NR>1 && $3==0 {print $1}' | head -20")
+    if out:
+        log.info(f"Unused modules: {out.replace(chr(10), ', ')}")
+    log.info("Kernel module check done.")
+
+
+# --- Cgroup Healing ---
+
+def check_cgroups():
+    if not cfg["enable_cgroup_heal"]:
+        return
+    log.info("Checking cgroups...")
+    _, out = run("systemctl status 2>/dev/null | grep -i 'degraded'")
+    if out:
+        log.warning("System in degraded state!")
+        _, failed = run("systemctl --failed --no-legend --plain")
+        if failed:
+            log.warning(f"Failed units:\n{failed[:300]}")
+        track("cgroup_fixes")
+    log.info("Cgroup check done.")
+
+
+# --- Dmesg Monitor ---
+
+def check_dmesg():
+    if not cfg["enable_dmesg_monitor"]:
+        return
+    log.info("Checking dmesg...")
+    _, out = run("dmesg --level=err,crit,alert,emerg -T 2>/dev/null | tail -20")
+    if out:
+        log.warning(f"Kernel errors:\n{out[:500]}")
+        track("dmesg_warnings")
+    log.info("Dmesg check done.")
+
+
+# --- GPU Temperature ---
+
+def check_gpu_temp():
+    if not cfg["enable_gpu_temp"]:
+        return
+    log.info("Checking GPU temperature...")
+    if shutil.which("nvidia-smi"):
+        _, out = run("nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader 2>/dev/null")
+        if out and out.strip().isdigit():
+            temp = int(out.strip())
+            if temp > cfg["temp_crit_c"]:
+                log.warning(f"GPU CRITICAL: {temp}°C!")
+                track("gpu_temp_warnings")
+            elif temp > cfg["temp_warn_c"]:
+                log.warning(f"GPU hot: {temp}°C")
+            else:
+                log.info(f"GPU: {temp}°C")
+    log.info("GPU temp check done.")
+
+
+# --- Fan Monitor ---
+
+def check_fans():
+    if not cfg["enable_fan_monitor"]:
+        return
+    log.info("Checking fans...")
+    _, out = run("sensors 2>/dev/null | grep -i fan | grep -v '0 RPM'")
+    if out:
+        log.info(f"Fans:\n{out}")
+    _, stopped = run("sensors 2>/dev/null | grep -i fan | grep '0 RPM'")
+    if stopped:
+        log.warning(f"Stopped fans:\n{stopped}")
+        track("fan_warnings")
+    log.info("Fan check done.")
+
+
+# --- Lid Switch ---
+
+def check_lid_switch():
+    if not cfg["enable_lid_switch"]:
+        return
+    if not os.path.exists("/etc/systemd/logind.conf"):
+        return
+    log.info("Checking lid switch config...")
+    _, out = run("grep -E '^HandleLidSwitch' /etc/systemd/logind.conf 2>/dev/null")
+    if not out:
+        log.info("Lid switch using defaults.")
+    log.info("Lid switch check done.")
+
+
+# --- Screen Lock Check ---
+
+def check_screen_lock():
+    if not cfg["enable_screen_lock"]:
+        return
+    log.info("Checking screen lock...")
+    _, out = run("gsettings get org.cinnamon.desktop.screensaver lock-enabled 2>/dev/null")
+    if out and out.strip() == "false":
+        log.warning("Screen lock disabled! Enabling...")
+        run("gsettings set org.cinnamon.desktop.screensaver lock-enabled true 2>/dev/null")
+        track("screen_lock_fixes")
+    log.info("Screen lock check done.")
+
+
+# --- SSH Hardening ---
+
+def check_ssh_harden():
+    if not cfg["enable_ssh_harden"]:
+        return
+    if not os.path.exists("/etc/ssh/sshd_config"):
+        return
+    log.info("Checking SSH hardening...")
+    checks = {
+        "PermitRootLogin": "no",
+        "PasswordAuthentication": "yes",
+        "MaxAuthTries": "5",
+        "X11Forwarding": "no",
+    }
+    _, content = run("cat /etc/ssh/sshd_config")
+    for key, recommended in checks.items():
+        match = re.search(rf'^{key}\s+(\S+)', content or "", re.MULTILINE)
+        if match:
+            val = match.group(1)
+            if key == "PermitRootLogin" and val == "yes":
+                log.warning(f"SSH: {key} is {val} (should be {recommended})")
+                track("ssh_hardens")
+            elif key == "MaxAuthTries":
+                if val.isdigit() and int(val) > 10:
+                    log.warning(f"SSH: MaxAuthTries too high ({val})")
+                    track("ssh_hardens")
+    log.info("SSH hardening check done.")
+
+
+# --- Failed Mount Retry ---
+
+def check_failed_mount_retry():
+    if not cfg["enable_failed_mount_retry"]:
+        return
+    log.info("Checking failed mounts...")
+    _, out = run("systemctl --failed --no-legend | grep mount")
+    if out:
+        for line in out.splitlines():
+            unit = line.split()[0] if line.split() else ""
+            if unit:
+                log.warning(f"Failed mount: {unit}. Retrying...")
+                run(f"systemctl restart {unit} 2>/dev/null")
+                track("failed_mount_retries")
+    log.info("Failed mount check done.")
+
+
+# --- SMART Self-Test ---
+
+def check_smart_selftest():
+    if not cfg["enable_disk_smart_selftest"]:
+        return
+    if not shutil.which("smartctl"):
+        return
+    log.info("Checking SMART self-test schedule...")
+    _, out = run("lsblk -dno NAME,ROTA | awk '$2==0{print $1}'")
+    if out:
+        for disk in out.splitlines():
+            disk = disk.strip()
+            if not disk:
+                continue
+            _, last = run(f"smartctl -l selftest /dev/{disk} 2>/dev/null | grep -c 'Completed'")
+            if last and last.isdigit() and int(last) == 0:
+                log.info(f"Starting short self-test on /dev/{disk}")
+                run(f"smartctl -t short /dev/{disk} 2>/dev/null")
+                track("smart_selftests")
+    log.info("SMART self-test check done.")
+
+
+# --- Network Speed Monitor ---
+
+def check_network_speed():
+    if not cfg["enable_network_speed"]:
+        return
+    log.info("Checking network speed...")
+    _, iface = run("ip route | awk '/default/{print $5}' | head -1")
+    if iface:
+        _, speed = run(f"cat /sys/class/net/{iface.strip()}/speed 2>/dev/null")
+        if speed and speed.strip().isdigit():
+            s = int(speed.strip())
+            if s < 100 and s > 0:
+                log.warning(f"Network link speed low: {s} Mbps on {iface.strip()}")
+                track("network_speed_warnings")
+            elif s > 0:
+                log.info(f"Network: {s} Mbps on {iface.strip()}")
+    log.info("Network speed check done.")
+
+
+# --- MAC Spoof Detection ---
+
+def check_mac_spoof():
+    if not cfg["enable_mac_spoof_detect"]:
+        return
+    log.info("Checking MAC addresses...")
+    _, out = run("ip link show | grep -E 'link/ether' | awk '{print $2}'")
+    if out:
+        for mac in out.splitlines():
+            mac = mac.strip()
+            if mac and mac.startswith("00:00:00"):
+                log.warning(f"Suspicious MAC: {mac}")
+                track("mac_spoof_detects")
+    log.info("MAC check done.")
+
+
+# --- Process Limit ---
+
+def check_process_limit():
+    if not cfg["enable_process_limit"]:
+        return
+    log.info("Checking process limits...")
+    _, out = run("ps aux --no-headers | wc -l")
+    if out and out.isdigit() and int(out) > 1000:
+        log.warning(f"High process count: {out}")
+        track("process_limit_fixes")
+    _, out = run("cat /proc/sys/kernel/threads-max")
+    if out and out.isdigit() and int(out) < 30000:
+        run("sysctl -w kernel.threads-max=65536")
+        track("process_limit_fixes")
+    log.info("Process limit check done.")
+
+
+# --- File Descriptor Healing ---
+
+def check_file_descriptors():
+    if not cfg["enable_file_descriptor_heal"]:
+        return
+    log.info("Checking file descriptors...")
+    _, out = run("cat /proc/sys/fs/file-nr | awk '{print $1, $3}'")
+    if out:
+        parts = out.split()
+        if len(parts) >= 2:
+            used, limit = int(parts[0]), int(parts[1])
+            if used > limit * 0.8:
+                log.warning(f"FD usage high: {used}/{limit}")
+                run("sysctl -w fs.file-max=2097152")
+                track("fd_fixes")
+    log.info("FD check done.")
+
+
+# --- Shared Memory Healing ---
+
+def check_shared_memory():
+    if not cfg["enable_shared_memory_heal"]:
+        return
+    log.info("Checking shared memory...")
+    _, out = run("ipcs -m 2>/dev/null | grep -c '^0x'")
+    if out and out.isdigit() and int(out) > 100:
+        log.warning(f"Many shared memory segments: {out}")
+        run("ipcs -m | awk '$6==0 {print $2}' | xargs -I{} ipcrm -m {} 2>/dev/null")
+        track("shm_fixes")
+    log.info("Shared memory check done.")
+
+
+# --- Semaphore Healing ---
+
+def check_semaphores():
+    if not cfg["enable_semaphore_heal"]:
+        return
+    log.info("Checking semaphores...")
+    _, out = run("ipcs -s 2>/dev/null | grep -c '^0x'")
+    if out and out.isdigit() and int(out) > 100:
+        log.warning(f"Many semaphore arrays: {out}")
+        track("sem_fixes")
+    log.info("Semaphore check done.")
+
+
+# --- D-Bus Healing ---
+
+def check_dbus():
+    if not cfg["enable_dbus_heal"]:
+        return
+    log.info("Checking D-Bus...")
+    _, out = run("systemctl is-active dbus 2>/dev/null")
+    if out != "active":
+        log.warning("D-Bus not active! Restarting...")
+        run("systemctl restart dbus")
+        track("dbus_fixes")
+    _, out = run("dbus-send --system --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.Peer.Ping 2>/dev/null")
+    if "Error" in (out or ""):
+        log.warning("D-Bus system bus not responding!")
+        run("systemctl restart dbus")
+        track("dbus_fixes")
+    log.info("D-Bus check done.")
+
+
+# --- PolicyKit Healing ---
+
+def check_polkit():
+    if not cfg["enable_polkit_heal"]:
+        return
+    log.info("Checking PolicyKit...")
+    _, out = run("systemctl is-active polkit 2>/dev/null")
+    if out != "active":
+        log.warning("PolicyKit not running! Starting...")
+        run("systemctl start polkit")
+        track("polkit_fixes")
+    log.info("PolicyKit check done.")
+
+
+# --- AppArmor Check ---
+
+def check_apparmor():
+    if not cfg["enable_apparmor_check"]:
+        return
+    if not shutil.which("aa-status"):
+        return
+    log.info("Checking AppArmor...")
+    _, out = run("aa-status 2>/dev/null | head -5")
+    if out:
+        log.info(f"AppArmor: {out.splitlines()[0] if out.splitlines() else 'unknown'}")
+    _, out = run("aa-status 2>/dev/null | grep -c 'complain'")
+    if out and out.isdigit() and int(out) > 0:
+        log.info(f"AppArmor: {out} profiles in complain mode")
+    log.info("AppArmor check done.")
+
+
+# --- GRUB Password Check ---
+
+def check_grub_password():
+    if not cfg["enable_grub_password_check"]:
+        return
+    log.info("Checking GRUB security...")
+    _, out = run("grep -c 'password' /etc/grub.d/* 2>/dev/null")
+    has_password = any(int(x.split(":")[-1]) > 0 for x in out.splitlines() if ":" in x and x.split(":")[-1].isdigit()) if out else False
+    if not has_password:
+        log.info("GRUB has no password protection (consider adding one).")
+        track("grub_password_warnings")
+    log.info("GRUB security check done.")
+
+
+# --- Core Pattern Check ---
+
+def check_core_pattern():
+    if not cfg["enable_core_pattern_check"]:
+        return
+    log.info("Checking core pattern...")
+    _, out = run("cat /proc/sys/kernel/core_pattern")
+    if out and "|" not in out and out.strip() == "core":
+        log.info("Core dumps go to current dir. Setting to systemd-coredump...")
+        run("sysctl -w kernel.core_pattern='|/lib/systemd/systemd-coredump %P %u %g %s %t %c %h'")
+        track("core_pattern_fixes")
+    log.info("Core pattern check done.")
+
+
+# --- Module Blacklist ---
+
+def check_module_blacklist():
+    if not cfg["enable_module_blacklist"]:
+        return
+    log.info("Checking module blacklist...")
+    dangerous = ["firewire-core", "firewire-ohci", "firewire-sbp2", "thunderbolt"]
+    for mod in dangerous:
+        _, out = run(f"lsmod | grep ^{mod}")
+        if out:
+            log.info(f"Module {mod} loaded (consider blacklisting for security)")
+    log.info("Module blacklist check done.")
+
+
+# --- IPv6 Check ---
+
+def check_ipv6():
+    if not cfg["enable_ipv6_check"]:
+        return
+    log.info("Checking IPv6...")
+    _, out = run("cat /proc/sys/net/ipv6/conf/all/disable_ipv6")
+    if out and out.strip() == "0":
+        _, v6addr = run("ip -6 addr show scope global 2>/dev/null | head -3")
+        if v6addr:
+            log.info("IPv6 enabled with global address.")
+        else:
+            log.info("IPv6 enabled but no global address.")
+    log.info("IPv6 check done.")
+
+
+# --- Disk I/O Scheduler ---
+
+def check_disk_scheduler():
+    if not cfg["enable_disk_scheduler"]:
+        return
+    log.info("Checking disk schedulers...")
+    _, out = run("lsblk -dno NAME,ROTA")
+    if out:
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                disk, rotational = parts[0], parts[1]
+                _, sched = run(f"cat /sys/block/{disk}/queue/scheduler 2>/dev/null")
+                if sched:
+                    if rotational == "0" and "none" not in sched and "mq-deadline" not in sched:
+                        log.info(f"SSD {disk}: setting scheduler to none")
+                        try:
+                            Path(f"/sys/block/{disk}/queue/scheduler").write_text("none")
+                            track("disk_scheduler_fixes")
+                        except (OSError, PermissionError):
+                            pass
+    log.info("Disk scheduler check done.")
+
+
+# --- NUMA Balance ---
+
+def check_numa():
+    if not cfg["enable_numa_balance"]:
+        return
+    log.info("Checking NUMA...")
+    _, out = run("cat /proc/sys/kernel/numa_balancing 2>/dev/null")
+    if out is not None:
+        log.info(f"NUMA balancing: {'enabled' if out.strip() == '1' else 'disabled'}")
+    log.info("NUMA check done.")
+
+
+# --- Hugepages Check ---
+
+def check_hugepages():
+    if not cfg["enable_hugepages_check"]:
+        return
+    log.info("Checking hugepages...")
+    _, out = run("cat /proc/meminfo | grep HugePages_Total")
+    if out:
+        log.info(f"Hugepages: {out.strip()}")
+    _, thp = run("cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null")
+    if thp:
+        log.info(f"THP: {thp.strip()}")
+    log.info("Hugepages check done.")
+
+
+# --- TCP Tuning ---
+
+def check_tcp_tuning():
+    if not cfg["enable_tcp_tuning"]:
+        return
+    log.info("Checking TCP tuning...")
+    tunings = {
+        "net.core.rmem_max": "16777216",
+        "net.core.wmem_max": "16777216",
+        "net.ipv4.tcp_fastopen": "3",
+        "net.ipv4.tcp_mtu_probing": "1",
+    }
+    for key, val in tunings.items():
+        _, current = run(f"sysctl -n {key} 2>/dev/null")
+        if current and int(current.strip() or 0) < int(val):
+            run(f"sysctl -w {key}={val}")
+            track("tcp_tuning_fixes")
+    log.info("TCP tuning check done.")
+
+
+# --- I/O Scheduler Healing ---
+
+def check_io_scheduler():
+    if not cfg["enable_io_scheduler_heal"]:
+        return
+    log.info("Checking I/O pressure...")
+    if os.path.exists("/proc/pressure/io"):
+        _, out = run("cat /proc/pressure/io")
+        if out:
+            for line in out.splitlines():
+                match = re.search(r'avg10=(\d+\.\d+)', line)
+                if match and float(match.group(1)) > 50:
+                    log.warning(f"High I/O pressure: {line}")
+                    track("io_scheduler_fixes")
+    log.info("I/O scheduler check done.")
+
+
+# --- Watchdog Check ---
+
+def check_watchdog():
+    if not cfg["enable_watchdog_check"]:
+        return
+    log.info("Checking watchdog...")
+    _, out = run("systemctl is-active systemd-watchdog 2>/dev/null")
+    if os.path.exists("/dev/watchdog"):
+        log.info("Hardware watchdog available.")
+    _, out = run("cat /proc/sys/kernel/watchdog 2>/dev/null")
+    if out and out.strip() == "0":
+        log.warning("Kernel watchdog disabled! Enabling...")
+        run("sysctl -w kernel.watchdog=1")
+        track("watchdog_fixes")
+    log.info("Watchdog check done.")
+
+
+# --- ACPI Check ---
+
+def check_acpi():
+    if not cfg["enable_acpi_check"]:
+        return
+    log.info("Checking ACPI...")
+    _, out = run("journalctl -b --grep='ACPI.*error\\|ACPI.*warning' --no-pager -q 2>/dev/null | tail -5")
+    if out:
+        log.warning(f"ACPI issues:\n{out[:300]}")
+        track("acpi_fixes")
+    log.info("ACPI check done.")
+
+
+# --- Display Manager Healing ---
+
+def check_display_manager():
+    if not cfg["enable_display_manager_heal"]:
+        return
+    log.info("Checking display manager...")
+    for dm in ["lightdm", "gdm3", "sddm"]:
+        _, out = run(f"systemctl is-enabled {dm} 2>/dev/null")
+        if out == "enabled":
+            _, active = run(f"systemctl is-active {dm} 2>/dev/null")
+            if active != "active":
+                log.warning(f"{dm} enabled but not active! Restarting...")
+                run(f"systemctl restart {dm}")
+                track("dm_fixes")
+            break
+    log.info("Display manager check done.")
+
+
+# --- XDG Directories Check ---
+
+def check_xdg_dirs():
+    if not cfg["enable_xdg_dirs_check"]:
+        return
+    log.info("Checking XDG directories...")
+    xdg_dirs = ["Desktop", "Documents", "Downloads", "Music", "Pictures", "Videos"]
+    home = os.path.expanduser("~")
+    for d in xdg_dirs:
+        path = os.path.join(home, d)
+        if not os.path.isdir(path):
+            log.warning(f"Missing XDG dir: {path}. Creating...")
+            os.makedirs(path, exist_ok=True)
+            track("xdg_fixes")
+    log.info("XDG dirs check done.")
+
+
+# --- Systemd Timer Healing ---
+
+def check_systemd_timers():
+    log.info("Checking systemd timers...")
+    _, out = run("systemctl list-timers --failed --no-legend --no-pager 2>/dev/null")
+    if out:
+        log.warning(f"Failed timers:\n{out[:300]}")
+        for line in out.splitlines():
+            unit = line.split()[-1] if line.split() else ""
+            if unit:
+                run(f"systemctl restart {unit} 2>/dev/null")
+        track("services_restarted")
+    log.info("Timer check done.")
+
+
 # --- Status Dashboard ---
 
 def show_status():
@@ -1781,6 +2434,37 @@ def show_status():
         ("APT source fixes", "apt_source_fixes"),
         ("User integrity fixes", "user_integrity_fixes"),
         ("Mount fixes", "mount_fixes"),
+        ("ARP spoof detects", "arp_spoof_detects"),
+        ("DNS leak fixes", "dns_leak_fixes"),
+        ("Open file fixes", "open_file_fixes"),
+        ("Kernel module fixes", "kernel_module_fixes"),
+        ("Cgroup fixes", "cgroup_fixes"),
+        ("Dmesg warnings", "dmesg_warnings"),
+        ("GPU temp warnings", "gpu_temp_warnings"),
+        ("Fan warnings", "fan_warnings"),
+        ("Screen lock fixes", "screen_lock_fixes"),
+        ("SSH hardens", "ssh_hardens"),
+        ("Failed mount retries", "failed_mount_retries"),
+        ("SMART self-tests", "smart_selftests"),
+        ("Net speed warnings", "network_speed_warnings"),
+        ("MAC spoof detects", "mac_spoof_detects"),
+        ("Process limit fixes", "process_limit_fixes"),
+        ("FD fixes", "fd_fixes"),
+        ("Shared mem fixes", "shm_fixes"),
+        ("Semaphore fixes", "sem_fixes"),
+        ("D-Bus fixes", "dbus_fixes"),
+        ("PolicyKit fixes", "polkit_fixes"),
+        ("AppArmor fixes", "apparmor_fixes"),
+        ("GRUB password warns", "grub_password_warnings"),
+        ("Core pattern fixes", "core_pattern_fixes"),
+        ("Module blacklist", "module_blacklist_fixes"),
+        ("Disk scheduler fixes", "disk_scheduler_fixes"),
+        ("TCP tuning fixes", "tcp_tuning_fixes"),
+        ("I/O scheduler fixes", "io_scheduler_fixes"),
+        ("Watchdog fixes", "watchdog_fixes"),
+        ("ACPI fixes", "acpi_fixes"),
+        ("Display mgr fixes", "dm_fixes"),
+        ("XDG dir fixes", "xdg_fixes"),
     ]
 
     w = 48
@@ -1841,6 +2525,24 @@ def heal_full():
         check_zombie_parents, check_oom_scores,
         check_sysctl, check_apt_sources,
         check_user_integrity, check_mounts,
+        check_arp_spoof, check_dns_leak,
+        check_open_file_limit, check_kernel_modules,
+        check_cgroups, check_dmesg,
+        check_gpu_temp, check_fans,
+        check_lid_switch, check_screen_lock,
+        check_ssh_harden, check_failed_mount_retry,
+        check_smart_selftest, check_network_speed,
+        check_mac_spoof, check_process_limit,
+        check_file_descriptors, check_shared_memory,
+        check_semaphores, check_dbus,
+        check_polkit, check_apparmor,
+        check_grub_password, check_core_pattern,
+        check_module_blacklist, check_ipv6,
+        check_disk_scheduler, check_numa,
+        check_hugepages, check_tcp_tuning,
+        check_io_scheduler, check_watchdog,
+        check_acpi, check_display_manager,
+        check_xdg_dirs, check_systemd_timers,
     ]:
         if shutdown_requested:
             log.info("Shutdown requested, stopping heal cycle.")
