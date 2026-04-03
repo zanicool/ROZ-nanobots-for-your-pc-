@@ -1,9 +1,7 @@
 [Unit]
-Description=ROZ NanoBots v5 - Self-healing system daemon
-DefaultDependencies=no
-After=sysinit.target network-online.target
+Description=ROZ NanoBots v7 - Self-healing system daemon
+After=multi-user.target network-online.target
 Wants=network-online.target
-Before=basic.target
 
 [Service]
 Type=simple
@@ -12,6 +10,8 @@ Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=30
+Nice=19
+IOSchedulingClass=idle
 
 [Install]
-WantedBy=sysinit.target
+WantedBy=multi-user.target
