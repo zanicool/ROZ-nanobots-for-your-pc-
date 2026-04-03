@@ -1,4 +1,4 @@
-# 🤖 ROZ NanoBots v5
+# 🤖 ROZ NanoBots v6
 
 A self-healing Linux daemon that automatically detects and fixes system issues — like Iron Man's nanobots, but for your PC.
 
@@ -35,6 +35,25 @@ ROZ NanoBots runs in the background and automatically:
 | Kernel Panic Detection | Catches critical kernel messages |
 | Crash Recovery | Cleans crash dumps from /var/crash |
 | Log Rotation | Prevents /var/log from filling up |
+| Docker Healing | Restarts dead containers, prunes dangling resources |
+| USB Monitoring | Detects USB errors and resets controllers |
+| Intrusion Detection | Spots port scans, brute force, excessive connections |
+| Config Watchdog | Detects unauthorized changes to critical config files |
+| Battery Protection | Warns on low battery, auto-hibernates at critical level |
+| Coredump Cleanup | Removes old crash dumps to save disk space |
+| Entropy Check | Ensures enough randomness for crypto, installs haveged |
+| Journal Health | Fixes corrupt journal entries, controls journal size |
+| Duplicate Process Detection | Kills duplicate instances of singleton services |
+| Disk I/O Latency | Warns when disk response times are dangerously high |
+| Orphan Package Cleanup | Purges residual configs from removed packages |
+| Broken Symlink Healing | Finds and fixes broken symlinks in system dirs |
+| Hostname Validation | Restores hostname if it gets corrupted |
+| Locale Healing | Fixes broken locale settings |
+| Xorg / Display Healing | Monitors Xorg errors and display server health |
+| Audio Healing | Restarts PulseAudio/PipeWire if audio stops working |
+| Bluetooth Healing | Unblocks and restarts bluetooth if it fails |
+| Cron Healing | Ensures cron is running, validates crontabs |
+| Tmpfiles Healing | Cleans old temp files, ensures /tmp is writable |
 | Stats Tracking | Logs every fix for lifetime statistics |
 
 ## Installation
@@ -100,14 +119,37 @@ Edit `/etc/nanobot/config.json` (created on install):
 | `enable_firewall_check` | `true` | Firewall status check |
 | `enable_time_sync` | `true` | NTP sync check |
 | `enable_permission_heal` | `true` | Fix critical file permissions |
+| `enable_docker` | `true` | Docker container healing |
+| `enable_usb_monitor` | `true` | USB device error detection |
+| `enable_network_intrusion` | `true` | Network intrusion detection |
+| `enable_config_watchdog` | `true` | Config file change detection |
+| `enable_battery` | `true` | Battery monitoring and protection |
+| `enable_coredump` | `true` | Coredump cleanup |
+| `enable_entropy` | `true` | Entropy pool monitoring |
+| `enable_journal_health` | `true` | Journal integrity checks |
+| `enable_duplicate_process` | `true` | Duplicate process detection |
+| `enable_disk_latency` | `true` | Disk I/O latency monitoring |
+| `enable_orphan_cleanup` | `true` | Orphan package cleanup |
+| `enable_symlink_heal` | `true` | Broken symlink repair |
+| `enable_hostname_check` | `true` | Hostname validation |
+| `enable_locale_check` | `true` | Locale healing |
+| `enable_xorg_heal` | `true` | Xorg/display healing |
+| `enable_audio_heal` | `true` | Audio subsystem healing |
+| `enable_bluetooth_heal` | `true` | Bluetooth healing |
+| `enable_cron_heal` | `true` | Cron service healing |
+| `enable_tmpfiles` | `true` | Temp file cleanup |
 | `critical_services` | `[journald, logind, dbus, cron]` | Services that must always be running |
 | `watched_services` | `[]` | Additional services to monitor |
+| `watched_configs` | `[/etc/passwd, /etc/shadow, ...]` | Config files to watch for changes |
 | `max_restart_attempts` | `3` | Max restarts per service per cycle |
+| `max_connections_per_ip` | `50` | Intrusion detection threshold |
+| `ssh_max_failed_per_hour` | `50` | Brute force detection threshold |
 | `disk_warn_pct` | `80` | Disk usage warning threshold |
 | `disk_crit_pct` | `90` | Disk usage critical threshold |
 | `mem_crit_mb` | `200` | Low memory threshold (MB) |
 | `temp_warn_c` | `80` | Temperature warning (°C) |
 | `temp_crit_c` | `90` | Temperature critical (°C) |
+| `battery_crit_pct` | `10` | Battery critical threshold (%) |
 | `max_log_size_mb` | `1000` | Max /var/log size before rotation |
 
 ## License

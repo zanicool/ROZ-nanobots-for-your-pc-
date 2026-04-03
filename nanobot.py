@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ROZ NanoBots v5 - Self-healing Linux system daemon."""
+"""ROZ NanoBots v6 - Self-healing Linux system daemon."""
 
 import subprocess
 import logging
@@ -36,6 +36,29 @@ DEFAULT_CONFIG = {
     "enable_firewall_check": True,
     "enable_time_sync": True,
     "enable_permission_heal": True,
+    "enable_docker": True,
+    "enable_usb_monitor": True,
+    "enable_network_intrusion": True,
+    "enable_config_watchdog": True,
+    "enable_battery": True,
+    "enable_coredump": True,
+    "enable_entropy": True,
+    "enable_journal_health": True,
+    "enable_duplicate_process": True,
+    "enable_disk_latency": True,
+    "enable_orphan_cleanup": True,
+    "enable_symlink_heal": True,
+    "enable_hostname_check": True,
+    "enable_locale_check": True,
+    "enable_xorg_heal": True,
+    "enable_audio_heal": True,
+    "enable_bluetooth_heal": True,
+    "enable_cron_heal": True,
+    "enable_tmpfiles": True,
+    "ssh_max_failed_per_hour": 50,
+    "watched_configs": ["/etc/passwd", "/etc/shadow", "/etc/group", "/etc/sudoers", "/etc/ssh/sshd_config", "/etc/fstab"],
+    "max_connections_per_ip": 50,
+    "battery_crit_pct": 10,
 }
 
 shutdown_requested = False
@@ -95,6 +118,13 @@ def load_stats():
         "permission_fixes": 0, "time_sync_fixes": 0, "firewall_fixes": 0,
         "gpu_fixes": 0, "swap_fixes": 0, "high_cpu_kills": 0,
         "fstab_fixes": 0, "dpkg_lock_fixes": 0,
+        "docker_fixes": 0, "usb_events": 0, "intrusion_blocks": 0,
+        "config_tampers": 0, "battery_warnings": 0, "coredump_cleans": 0,
+        "entropy_fixes": 0, "journal_fixes": 0, "duplicate_kills": 0,
+        "disk_latency_warnings": 0, "orphan_cleans": 0, "symlink_fixes": 0,
+        "hostname_fixes": 0, "locale_fixes": 0, "xorg_fixes": 0,
+        "audio_fixes": 0, "bluetooth_fixes": 0, "cron_fixes": 0,
+        "tmpfile_fixes": 0,
         "last_run": None, "uptime_start": datetime.now().isoformat(),
     }
     try:
@@ -745,6 +775,482 @@ def check_log_sizes():
         log.info(f"/var/log: {out}MB")
 
 
+# --- Docker Healing ---
+
+def check_docker():
+    if not cfg["enable_docker"]:
+        return
+    if not shutil.which("docker"):
+        return
+    log.info("Checking Docker...")
+    _, out = run("systemctl is-active docker 2>/dev/null")
+    if out != "active":
+        log.warning("Docker daemon not running! Starting...")
+        run("systemctl start docker")
+        track("docker_fixes")
+    _, out = run("docker ps -a --filter 'status=exited' --filter 'status=dead' --format '{{.Names}}' 2>/dev/null")
+    if out:
+        for name in out.splitlines():
+            name = name.strip()
+            if not name:
+                continue
+            _, inspect = run(f"docker inspect --format '{{{{.RestartCount}}}}' {name} 2>/dev/null")
+            log.warning(f"Container '{name}' is down (restarts: {inspect}). Restarting...")
+            run(f"docker start {name}")
+            track("docker_fixes")
+    # Prune dangling images/volumes if disk is tight
+    total, used, _ = shutil.disk_usage("/")
+    if used / total * 100 > cfg["disk_warn_pct"]:
+        run("docker system prune -f 2>/dev/null")
+        log.info("Docker pruned dangling resources.")
+    log.info("Docker check done.")
+
+
+# --- USB Device Monitoring ---
+
+def check_usb():
+    if not cfg["enable_usb_monitor"]:
+        return
+    log.info("Checking USB devices...")
+    _, out = run("journalctl -b --grep='USB disconnect\\|usb.*error\\|device descriptor read' --no-pager -q 2>/dev/null | tail -10")
+    if out:
+        log.warning(f"USB issues detected:\n{out[:500]}")
+        # Reset USB controllers if errors are excessive
+        error_count = len(out.splitlines())
+        if error_count > 5:
+            log.warning("Many USB errors — resetting USB controllers...")
+            _, controllers = run("find /sys/bus/usb/devices/usb*/authorized -maxdepth 0 2>/dev/null")
+            if controllers:
+                for ctrl in controllers.splitlines():
+                    ctrl = ctrl.strip()
+                    if ctrl:
+                        try:
+                            Path(ctrl).write_text("0")
+                            time.sleep(1)
+                            Path(ctrl).write_text("1")
+                        except (PermissionError, OSError):
+                            pass
+            track("usb_events")
+    log.info("USB check done.")
+
+
+# --- Network Intrusion Detection ---
+
+def check_intrusions():
+    if not cfg["enable_network_intrusion"]:
+        return
+    log.info("Checking for network intrusions...")
+    # Check for excessive connections from single IPs
+    _, out = run("ss -tn state established | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | sort -rn | head -10")
+    if out:
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].isdigit():
+                count, ip = int(parts[0]), parts[1]
+                if count > cfg["max_connections_per_ip"] and ip not in ("127.0.0.1", "::1", ""):
+                    log.warning(f"Suspicious: {count} connections from {ip}")
+                    track("intrusion_blocks")
+
+    # Check for port scanning (many SYN_RECV)
+    _, out = run("ss -tn state syn-recv | wc -l")
+    if out and out.isdigit() and int(out) > 20:
+        log.warning(f"Possible port scan: {out} SYN_RECV connections!")
+        track("intrusion_blocks")
+
+    # Check for new listening ports since last check
+    _, out = run("ss -tlnp | grep -v '127.0.0' | grep -v '::1'")
+    if out:
+        log.info(f"Listening ports:\n{out}")
+
+    # Check auth log for brute force on any service
+    _, out = run("journalctl --since '1 hour ago' --grep='authentication failure\\|Failed password' --no-pager -q 2>/dev/null | wc -l")
+    if out and out.isdigit() and int(out) > cfg["ssh_max_failed_per_hour"]:
+        log.warning(f"{out} auth failures in last hour — possible brute force!")
+        track("intrusion_blocks")
+
+    log.info("Intrusion check done.")
+
+
+# --- Config File Watchdog ---
+
+config_hashes = {}
+
+def check_config_watchdog():
+    if not cfg["enable_config_watchdog"]:
+        return
+    log.info("Checking config file integrity...")
+    global config_hashes
+    for filepath in cfg["watched_configs"]:
+        if not os.path.exists(filepath):
+            continue
+        _, current_hash = run(f"sha256sum '{filepath}' 2>/dev/null")
+        if not current_hash:
+            continue
+        current_hash = current_hash.split()[0]
+        if filepath in config_hashes:
+            if config_hashes[filepath] != current_hash:
+                log.warning(f"CONFIG CHANGED: {filepath}")
+                # Backup the changed file
+                backup_dir = "/var/log/nanobot_config_backups"
+                os.makedirs(backup_dir, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                run(f"cp '{filepath}' '{backup_dir}/{os.path.basename(filepath)}.{ts}'")
+                track("config_tampers")
+        config_hashes[filepath] = current_hash
+    log.info("Config watchdog done.")
+
+
+# --- Battery Monitoring ---
+
+def check_battery():
+    if not cfg["enable_battery"]:
+        return
+    bat_path = Path("/sys/class/power_supply/BAT0")
+    if not bat_path.exists():
+        bat_path = Path("/sys/class/power_supply/BAT1")
+    if not bat_path.exists():
+        return
+    log.info("Checking battery...")
+    try:
+        capacity = int((bat_path / "capacity").read_text().strip())
+        status = (bat_path / "status").read_text().strip()
+    except (ValueError, OSError):
+        return
+    if capacity <= cfg["battery_crit_pct"] and status == "Discharging":
+        log.warning(f"CRITICAL BATTERY: {capacity}%! Hibernating in 60s...")
+        run("wall 'NanoBot: Battery critical! Hibernating in 60 seconds.'")
+        time.sleep(60)
+        # Re-check in case charger was plugged in
+        try:
+            status = (bat_path / "status").read_text().strip()
+        except OSError:
+            status = "Unknown"
+        if status == "Discharging":
+            run("systemctl hibernate 2>/dev/null || systemctl suspend")
+        track("battery_warnings")
+    elif capacity <= 20 and status == "Discharging":
+        log.warning(f"Low battery: {capacity}%")
+        track("battery_warnings")
+    else:
+        log.info(f"Battery: {capacity}% ({status})")
+
+
+# --- Coredump Cleanup ---
+
+def check_coredumps():
+    if not cfg["enable_coredump"]:
+        return
+    log.info("Checking coredumps...")
+    cleaned = 0
+    for d in ["/var/lib/systemd/coredump", "/var/crash"]:
+        if not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            fp = os.path.join(d, f)
+            try:
+                age = time.time() - os.path.getmtime(fp)
+                if age > 86400 * 3:  # older than 3 days
+                    os.remove(fp)
+                    cleaned += 1
+            except OSError:
+                pass
+    # Also clean systemd coredumps
+    _, out = run("coredumpctl list --no-pager 2>/dev/null | wc -l")
+    if out and out.isdigit() and int(out) > 20:
+        run("journalctl --vacuum-size=100M --rotate 2>/dev/null")
+    if cleaned:
+        log.info(f"Cleaned {cleaned} old coredumps.")
+        track("coredump_cleans", cleaned)
+    log.info("Coredump check done.")
+
+
+# --- Entropy Check ---
+
+def check_entropy():
+    if not cfg["enable_entropy"]:
+        return
+    log.info("Checking entropy...")
+    try:
+        entropy = int(Path("/proc/sys/kernel/random/entropy_avail").read_text().strip())
+    except (ValueError, OSError):
+        return
+    if entropy < 200:
+        log.warning(f"Low entropy: {entropy}! Installing haveged...")
+        if not shutil.which("haveged"):
+            run("apt-get install -y haveged")
+        run("systemctl enable --now haveged 2>/dev/null")
+        track("entropy_fixes")
+    else:
+        log.info(f"Entropy OK ({entropy}).")
+
+
+# --- Journal Health ---
+
+def check_journal_health():
+    if not cfg["enable_journal_health"]:
+        return
+    log.info("Checking journal health...")
+    _, out = run("journalctl --verify 2>&1 | grep -c FAIL")
+    if out and out.isdigit() and int(out) > 0:
+        log.warning(f"Corrupt journal entries: {out}. Rotating...")
+        run("journalctl --rotate")
+        run("journalctl --vacuum-time=7d")
+        track("journal_fixes")
+    # Check journal disk usage
+    _, out = run("journalctl --disk-usage 2>/dev/null")
+    if out:
+        log.info(f"Journal: {out}")
+        match = re.search(r'(\d+\.?\d*)\s*G', out)
+        if match and float(match.group(1)) > 2:
+            log.warning("Journal too large! Vacuuming...")
+            run("journalctl --vacuum-size=500M")
+            track("journal_fixes")
+    log.info("Journal check done.")
+
+
+# --- Duplicate Process Detection ---
+
+def check_duplicate_processes():
+    if not cfg["enable_duplicate_process"]:
+        return
+    log.info("Checking duplicate processes...")
+    # Processes that should only have one instance
+    singles = ["NetworkManager", "systemd-resolved", "systemd-timesyncd", "cupsd", "bluetoothd"]
+    for proc in singles:
+        _, out = run(f"pgrep -c {proc} 2>/dev/null")
+        if out and out.isdigit() and int(out) > 1:
+            log.warning(f"Multiple {proc} instances ({out})! Restarting service...")
+            run(f"systemctl restart {proc} 2>/dev/null")
+            track("duplicate_kills")
+    log.info("Duplicate process check done.")
+
+
+# --- Disk I/O Latency ---
+
+def check_disk_latency():
+    if not cfg["enable_disk_latency"]:
+        return
+    log.info("Checking disk latency...")
+    _, out = run("iostat -x 1 2 2>/dev/null | tail -10")
+    if not out and not shutil.which("iostat"):
+        return
+    if out:
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 10 and parts[0] not in ("Device", "Linux", "", "avg-cpu:"):
+                try:
+                    await_ms = float(parts[-3])  # r_await or w_await
+                    if await_ms > 500:
+                        log.warning(f"High disk latency on {parts[0]}: {await_ms}ms!")
+                        track("disk_latency_warnings")
+                except (ValueError, IndexError):
+                    pass
+    log.info("Disk latency check done.")
+
+
+# --- Orphan Package Cleanup ---
+
+def check_orphan_packages():
+    if not cfg["enable_orphan_cleanup"]:
+        return
+    log.info("Checking orphan packages...")
+    _, out = run("apt list --installed 2>/dev/null | grep -c 'residual-config'")
+    if out and out.isdigit() and int(out) > 0:
+        run("dpkg --purge $(dpkg -l | awk '/^rc/{print $2}') 2>/dev/null")
+        log.info(f"Purged {out} residual configs.")
+        track("orphan_cleans")
+    # Remove orphaned libs
+    _, out = run("deborphan 2>/dev/null | head -20")
+    if out and shutil.which("deborphan"):
+        log.info(f"Orphaned packages:\n{out}")
+    log.info("Orphan check done.")
+
+
+# --- Broken Symlink Healing ---
+
+def check_broken_symlinks():
+    if not cfg["enable_symlink_heal"]:
+        return
+    log.info("Checking broken symlinks...")
+    fixed = 0
+    for d in ["/usr/bin", "/usr/lib", "/etc/alternatives"]:
+        _, out = run(f"find {d} -maxdepth 1 -xtype l 2>/dev/null")
+        if out:
+            for link in out.splitlines():
+                link = link.strip()
+                if not link:
+                    continue
+                log.warning(f"Broken symlink: {link}")
+                # For /etc/alternatives, try update-alternatives
+                if "/etc/alternatives/" in link:
+                    name = os.path.basename(link)
+                    run(f"update-alternatives --auto {name} 2>/dev/null")
+                    fixed += 1
+    if fixed:
+        track("symlink_fixes", fixed)
+    log.info("Symlink check done.")
+
+
+# --- Hostname Validation ---
+
+def check_hostname():
+    if not cfg["enable_hostname_check"]:
+        return
+    log.info("Checking hostname...")
+    _, hostname = run("hostname")
+    if not hostname or hostname == "(none)" or hostname == "localhost":
+        log.warning(f"Invalid hostname: '{hostname}'")
+        # Try to restore from /etc/hostname
+        if os.path.exists("/etc/hostname"):
+            _, saved = run("cat /etc/hostname")
+            if saved and saved.strip():
+                run(f"hostnamectl set-hostname '{saved.strip()}'")
+                log.info(f"Hostname restored to '{saved.strip()}'")
+                track("hostname_fixes")
+    # Verify /etc/hosts has the hostname
+    _, hosts = run("cat /etc/hosts")
+    if hostname and hostname not in hosts:
+        log.warning(f"Hostname '{hostname}' missing from /etc/hosts")
+    log.info("Hostname check done.")
+
+
+# --- Locale Healing ---
+
+def check_locale():
+    if not cfg["enable_locale_check"]:
+        return
+    log.info("Checking locale...")
+    _, out = run("locale 2>&1")
+    if "Cannot set" in out or "warning" in out.lower():
+        log.warning(f"Locale issues:\n{out[:300]}")
+        run("locale-gen en_US.UTF-8 2>/dev/null")
+        run("update-locale LANG=en_US.UTF-8 2>/dev/null")
+        track("locale_fixes")
+    else:
+        log.info("Locale OK.")
+
+
+# --- Xorg / Display Healing ---
+
+def check_xorg():
+    if not cfg["enable_xorg_heal"]:
+        return
+    if not os.path.exists("/var/log/Xorg.0.log"):
+        return
+    log.info("Checking Xorg...")
+    _, out = run("grep '(EE)' /var/log/Xorg.0.log 2>/dev/null | grep -v '(WW)' | tail -10")
+    if out:
+        errors = len(out.splitlines())
+        if errors > 10:
+            log.warning(f"Xorg has {errors} errors:\n{out[:500]}")
+            # Check if display is actually working
+            _, display = run("xdpyinfo 2>/dev/null | head -3")
+            if not display:
+                log.warning("Display server may be broken!")
+                track("xorg_fixes")
+    # Check for screen tearing fix
+    _, compositor = run("pgrep -a compton 2>/dev/null || pgrep -a picom 2>/dev/null")
+    log.info("Xorg check done.")
+
+
+# --- Audio Healing ---
+
+def check_audio():
+    if not cfg["enable_audio_heal"]:
+        return
+    log.info("Checking audio...")
+    _, out = run("pactl info 2>/dev/null")
+    if not out or "Connection failure" in out:
+        log.warning("PulseAudio not responding! Restarting...")
+        run("pulseaudio --kill 2>/dev/null")
+        time.sleep(1)
+        run("pulseaudio --start 2>/dev/null")
+        # Try pipewire if pulse fails
+        _, check = run("pactl info 2>/dev/null")
+        if not check or "Connection failure" in check:
+            run("systemctl --user restart pipewire pipewire-pulse 2>/dev/null")
+        track("audio_fixes")
+    else:
+        # Check if any sinks exist
+        _, sinks = run("pactl list short sinks 2>/dev/null")
+        if not sinks:
+            log.warning("No audio sinks found!")
+            run("pulseaudio --kill 2>/dev/null && pulseaudio --start 2>/dev/null")
+            track("audio_fixes")
+        else:
+            log.info("Audio OK.")
+
+
+# --- Bluetooth Healing ---
+
+def check_bluetooth():
+    if not cfg["enable_bluetooth_heal"]:
+        return
+    if not shutil.which("bluetoothctl"):
+        return
+    log.info("Checking Bluetooth...")
+    _, out = run("systemctl is-active bluetooth 2>/dev/null")
+    if out == "failed":
+        log.warning("Bluetooth service failed! Restarting...")
+        run("systemctl restart bluetooth")
+        track("bluetooth_fixes")
+    # Check if adapter is blocked
+    _, out = run("rfkill list bluetooth 2>/dev/null")
+    if "Soft blocked: yes" in out:
+        log.warning("Bluetooth soft-blocked! Unblocking...")
+        run("rfkill unblock bluetooth")
+        track("bluetooth_fixes")
+    log.info("Bluetooth check done.")
+
+
+# --- Cron Healing ---
+
+def check_cron():
+    if not cfg["enable_cron_heal"]:
+        return
+    log.info("Checking cron...")
+    _, out = run("systemctl is-active cron 2>/dev/null")
+    if out != "active":
+        log.warning("Cron not running! Starting...")
+        run("systemctl start cron")
+        track("cron_fixes")
+    # Validate crontabs
+    _, out = run("find /var/spool/cron/crontabs -type f 2>/dev/null")
+    if out:
+        for tab in out.splitlines():
+            tab = tab.strip()
+            if not tab:
+                continue
+            user = os.path.basename(tab)
+            rc, _ = run(f"crontab -u {user} -l 2>&1 | crontab -u {user} - 2>&1")
+            if rc != 0:
+                log.warning(f"Corrupt crontab for {user}!")
+                track("cron_fixes")
+    log.info("Cron check done.")
+
+
+# --- Tmpfiles Healing ---
+
+def check_tmpfiles():
+    if not cfg["enable_tmpfiles"]:
+        return
+    log.info("Checking tmpfiles...")
+    # Ensure /tmp is writable and has correct permissions
+    if not os.access("/tmp", os.W_OK):
+        log.warning("/tmp not writable! Fixing...")
+        run("chmod 1777 /tmp")
+        track("tmpfile_fixes")
+    # Clean old tmp files
+    _, out = run("find /tmp -type f -atime +7 -not -path '/tmp/systemd-*' 2>/dev/null | wc -l")
+    if out and out.isdigit() and int(out) > 100:
+        log.info(f"Cleaning {out} old tmp files...")
+        run("find /tmp -type f -atime +7 -not -path '/tmp/systemd-*' -delete 2>/dev/null")
+        track("tmpfile_fixes")
+    # Run systemd-tmpfiles
+    run("systemd-tmpfiles --clean 2>/dev/null")
+    log.info("Tmpfiles check done.")
+
+
 # --- Status Dashboard ---
 
 def show_status():
@@ -780,12 +1286,31 @@ def show_status():
         ("High CPU kills", "high_cpu_kills"),
         ("Fstab fixes", "fstab_fixes"),
         ("Dpkg lock fixes", "dpkg_lock_fixes"),
+        ("Docker fixes", "docker_fixes"),
+        ("USB events", "usb_events"),
+        ("Intrusion blocks", "intrusion_blocks"),
+        ("Config tampers", "config_tampers"),
+        ("Battery warnings", "battery_warnings"),
+        ("Coredump cleans", "coredump_cleans"),
+        ("Entropy fixes", "entropy_fixes"),
+        ("Journal fixes", "journal_fixes"),
+        ("Duplicate kills", "duplicate_kills"),
+        ("Disk latency warns", "disk_latency_warnings"),
+        ("Orphan cleans", "orphan_cleans"),
+        ("Symlink fixes", "symlink_fixes"),
+        ("Hostname fixes", "hostname_fixes"),
+        ("Locale fixes", "locale_fixes"),
+        ("Xorg fixes", "xorg_fixes"),
+        ("Audio fixes", "audio_fixes"),
+        ("Bluetooth fixes", "bluetooth_fixes"),
+        ("Cron fixes", "cron_fixes"),
+        ("Tmpfile fixes", "tmpfile_fixes"),
     ]
 
     w = 48
     print()
     print(f"╔{'═' * w}╗")
-    print(f"║{'🤖 ROZ NanoBots v5 Status':^{w}}║")
+    print(f"║{'🤖 ROZ NanoBots v6 Status':^{w}}║")
     print(f"╠{'═' * w}╣")
     print(f"║  Running since:    {first:<{w - 21}}║")
     print(f"║  Uptime:           {uptime:<{w - 21}}║")
@@ -808,7 +1333,7 @@ def heal_full():
     """Full healing cycle."""
     global restart_counts
     restart_counts = {}
-    log.info("========== ROZ NanoBots v5 — Full Heal ==========")
+    log.info("========== ROZ NanoBots v6 — Full Heal ==========")
     for fn in [
         fix_broken_packages, update_system,
         check_kernel_health, rebuild_grub,
@@ -823,6 +1348,14 @@ def heal_full():
         check_time_sync, check_permissions,
         check_kernel_panics, check_crash_dumps,
         check_log_sizes,
+        check_docker, check_usb, check_intrusions,
+        check_config_watchdog, check_battery,
+        check_coredumps, check_entropy,
+        check_journal_health, check_duplicate_processes,
+        check_disk_latency, check_orphan_packages,
+        check_broken_symlinks, check_hostname,
+        check_locale, check_xorg, check_audio,
+        check_bluetooth, check_cron, check_tmpfiles,
     ]:
         if shutdown_requested:
             log.info("Shutdown requested, stopping heal cycle.")
@@ -839,7 +1372,8 @@ def heal_quick():
     for fn in [
         check_critical_services, check_failed_services,
         kill_zombies, check_memory, check_thermals,
-        check_network,
+        check_network, check_battery, check_audio,
+        check_duplicate_processes,
     ]:
         if shutdown_requested:
             break
@@ -880,7 +1414,7 @@ def main():
         print("NanoBot needs root. Run with: sudo python3 nanobot.py")
         sys.exit(1)
 
-    log.info("ROZ NanoBots v5 activated.")
+    log.info("ROZ NanoBots v6 activated.")
     log.info(f"Full heal every {cfg['interval']}s, quick check every {cfg['realtime_interval']}s")
 
     while not shutdown_requested:
@@ -907,7 +1441,7 @@ def main():
             time.sleep(60)
 
     save_stats(stats)
-    log.info("ROZ NanoBots v5 shut down cleanly.")
+    log.info("ROZ NanoBots v6 shut down cleanly.")
 
 
 if __name__ == "__main__":
