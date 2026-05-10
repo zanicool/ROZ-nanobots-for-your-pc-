@@ -3867,6 +3867,212 @@ def heal_quick():
     save_stats(stats)
 
 
+def show_cleanup():
+    """WinDirStat-style disk analysis with smart cleanup suggestions."""
+    B = "\033[1m"
+    D = "\033[2m"
+    R = "\033[31m"
+    Y = "\033[33m"
+    G = "\033[32m"
+    C = "\033[36m"
+    Z = "\033[0m"
+
+    # Disk overview
+    total, used, free = shutil.disk_usage("/")
+    pct = int(used / total * 100)
+    bar_w = 50
+    filled = max(1, pct * bar_w // 100)
+    color = R if pct >= 90 else Y if pct >= 70 else G
+    bar = f"{color}{'█' * filled}{D}{'░' * (bar_w - filled)}{Z}"
+    print(f"\n{B}═══ DISK USAGE ═══{Z}\n")
+    print(f"  {bar} {pct}%  {used // 2**30}G / {total // 2**30}G ({free // 2**30}G free)")
+
+    # Space map
+    print(f"\n{B}═══ SPACE MAP ═══{Z}\n")
+    print(f"  {D}{'PATH':<50} {'SIZE':>8}  {'':>4}{Z}")
+    print(f"  {D}{'─' * 68}{Z}")
+    home = Path.home()
+    dirs = []
+    for p in sorted(home.iterdir()):
+        try:
+            s = sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) if p.is_dir() else p.stat().st_size
+        except (PermissionError, OSError):
+            try:
+                out = subprocess.run(["du", "-sb", str(p)], capture_output=True, text=True, timeout=10)
+                s = int(out.stdout.split()[0]) if out.returncode == 0 else 0
+            except Exception:
+                s = 0
+        if s > 100_000_000:  # >100MB
+            dirs.append((s, p))
+    dirs.sort(reverse=True)
+    for size, path in dirs[:20]:
+        p = pct_of = int(size * 100 / total)
+        mini = max(1, p * 20 // 100)
+        c = R if p >= 10 else Y if p >= 5 else G
+        name = f"~/{path.name}" if str(path).startswith(str(home)) else str(path)
+        sz = f"{size / 2**30:.1f}G" if size >= 2**30 else f"{size // 2**20}M"
+        print(f"  {name:<50} {sz:>8}  {c}{'█' * mini}{Z} {p}%")
+
+    # Smart suggestions
+    print(f"\n{B}═══ CLEANUP SUGGESTIONS ═══{Z}\n")
+    suggestions: list[tuple[str, str, str]] = []
+
+    # Caches
+    cache_dir = home / ".cache"
+    cache_targets = [
+        ("pip", "Pip cache", "pip cache purge"),
+        ("go-build", "Go build cache", "go clean -cache"),
+        ("ms-playwright", "Playwright browsers", "rm -rf ~/.cache/ms-playwright"),
+        ("puppeteer", "Puppeteer browsers", "rm -rf ~/.cache/puppeteer"),
+        ("rod", "Rod browser cache", "rm -rf ~/.cache/rod"),
+        ("mozilla", "Firefox cache", "rm -rf ~/.cache/mozilla"),
+        ("spotify", "Spotify cache", "rm -rf ~/.cache/spotify"),
+    ]
+    for dirname, label, cmd in cache_targets:
+        p = cache_dir / dirname
+        if p.exists():
+            try:
+                out = subprocess.run(["du", "-sm", str(p)], capture_output=True, text=True, timeout=10)
+                mb = int(out.stdout.split()[0])
+                if mb > 200:
+                    suggestions.append((f"{mb}M", label, cmd))
+            except Exception:
+                pass
+
+    # NPM cache
+    npm_dir = home / ".npm"
+    if npm_dir.exists():
+        try:
+            out = subprocess.run(["du", "-sm", str(npm_dir)], capture_output=True, text=True, timeout=10)
+            mb = int(out.stdout.split()[0])
+            if mb > 500:
+                suggestions.append((f"{mb}M", "NPM cache", "npm cache clean --force"))
+        except Exception:
+            pass
+
+    # APT cache
+    try:
+        out = subprocess.run(["du", "-sm", "/var/cache/apt"], capture_output=True, text=True, timeout=10)
+        mb = int(out.stdout.split()[0])
+        if mb > 500:
+            suggestions.append((f"{mb}M", "APT package cache", "sudo apt clean"))
+    except Exception:
+        pass
+
+    # Journal logs
+    try:
+        out = subprocess.run(["journalctl", "--disk-usage"], capture_output=True, text=True, timeout=5)
+        m = re.search(r"([\d.]+[GM])", out.stdout)
+        if m:
+            suggestions.append((f"~{m.group(1)}", "Systemd journal (keep 3 days)", "sudo journalctl --vacuum-time=3d"))
+    except Exception:
+        pass
+
+    # /var/log
+    try:
+        out = subprocess.run(["du", "-sm", "/var/log"], capture_output=True, text=True, timeout=10)
+        mb = int(out.stdout.split()[0])
+        if mb > 2000:
+            suggestions.append((f"{mb}M", "/var/log rotated logs", "sudo find /var/log -name '*.gz' -delete && sudo find /var/log -name '*.1' -delete"))
+    except Exception:
+        pass
+
+    # Large files in Downloads
+    dl = home / "Downloads"
+    if dl.exists():
+        try:
+            out = subprocess.run(["du", "-sm", str(dl)], capture_output=True, text=True, timeout=10)
+            mb = int(out.stdout.split()[0])
+            if mb > 5000:
+                suggestions.append((f"{mb}M", "Downloads folder (review)", f"ls -lhS {dl} | head -20"))
+        except Exception:
+            pass
+
+    # Ollama models
+    ollama_dir = home / ".ollama" / "models"
+    if ollama_dir.exists():
+        try:
+            out = subprocess.run(["du", "-sm", str(ollama_dir)], capture_output=True, text=True, timeout=10)
+            mb = int(out.stdout.split()[0])
+            if mb > 5000:
+                models = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=10)
+                model_list = "\n".join(f"      {l}" for l in models.stdout.strip().splitlines()[1:]) if models.returncode == 0 else ""
+                label = f"Ollama models (remove unused)\n{model_list}" if model_list else "Ollama models"
+                suggestions.append((f"{mb}M", label, "ollama list  # then: ollama rm <name>"))
+        except Exception:
+            pass
+
+    # Docker
+    try:
+        out = subprocess.run(["du", "-sm", "/var/lib/docker"], capture_output=True, text=True, timeout=10)
+        mb = int(out.stdout.split()[0])
+        if mb > 1000:
+            suggestions.append((f"{mb}M", "Docker unused images/containers", "docker system prune -af"))
+    except Exception:
+        pass
+
+    # Large one-off files
+    patterns = [
+        (home, "cuda*.run", "CUDA installer (safe to delete after install)"),
+        (home, "*.iso", "ISO images"),
+    ]
+    for search_dir, glob_pat, label in patterns:
+        for f in search_dir.glob(glob_pat):
+            sz = f.stat().st_size
+            if sz > 500_000_000:
+                szh = f"{sz / 2**30:.1f}G" if sz >= 2**30 else f"{sz // 2**20}M"
+                suggestions.append((szh, f"{label}: {f.name}", f"rm {f}"))
+
+    if not suggestions:
+        print(f"  {G}No major cleanup opportunities found.{Z}")
+    else:
+        for i, (size, label, cmd) in enumerate(suggestions, 1):
+            print(f"  {C}{i:2d}.{Z} {B}[{size}]{Z} {label}")
+            print(f"      {D}$ {cmd}{Z}\n")
+
+    # Interactive
+    print(f"{B}═══ CLEANUP ═══{Z}\n")
+    print(f"  Enter numbers (e.g. '1 3 5'), 'all', or 'q': ", end="", flush=True)
+    try:
+        choice = input().strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Bye!")
+        return
+
+    if not choice or choice == "q":
+        print("  Bye!")
+        return
+
+    if choice == "all":
+        indices = list(range(len(suggestions)))
+    else:
+        indices = []
+        for x in choice.split():
+            try:
+                indices.append(int(x) - 1)
+            except ValueError:
+                pass
+
+    for idx in indices:
+        if 0 <= idx < len(suggestions):
+            size, label, cmd = suggestions[idx]
+            print(f"\n  {Y}▶ {label.splitlines()[0]}{Z}")
+            print(f"    $ {cmd}")
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if result.stdout.strip():
+                for line in result.stdout.strip().splitlines()[:20]:
+                    print(f"    {line}")
+            print(f"    {G}✓ Done{Z}")
+
+    # Final status
+    _, used_after, free_after = shutil.disk_usage("/")
+    freed = used - used_after
+    print(f"\n{B}After cleanup:{Z}")
+    print(f"  {used_after // 2**30}G used / {total // 2**30}G total ({free_after // 2**30}G free)")
+    if freed > 0:
+        print(f"  {G}Freed {freed // 2**20}MB{Z}")
+
+
 def main():
     global stats
     if len(sys.argv) > 1:
@@ -3881,6 +4087,9 @@ def main():
         if cmd == "quick":
             heal_quick()
             return
+        if cmd == "cleanup":
+            show_cleanup()
+            return
         if cmd == "config":
             os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
             if not os.path.exists(CONFIG_FILE):
@@ -3890,7 +4099,7 @@ def main():
             else:
                 print(f"Config exists: {CONFIG_FILE}")
             return
-        print(f"Usage: {sys.argv[0]} [status|heal|quick|config]")
+        print(f"Usage: {sys.argv[0]} [status|heal|quick|cleanup|config]")
         return
 
     if os.geteuid() != 0:

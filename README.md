@@ -152,6 +152,13 @@ Edit `/etc/nanobot/config.json` (created on install):
 | `battery_crit_pct` | `10` | Battery critical threshold (%) |
 | `max_log_size_mb` | `1000` | Max /var/log size before rotation |
 
+## Documentation
+
+- [docs/](docs/README.md) — architecture, design diagrams, ADRs
+- [Architecture & Diagrams](docs/designs/architecture.md) — class diagram, sequence diagrams
+- [C4 Model](docs/designs/c4-diagrams.md) — system context through code level
+- [ADR-001: Module Decomposition](docs/adrs/adr-001-module-decomposition.md) — splitting the monolith
+
 ## License
 
 MIT License — see [LICENSE](LICENSE)
