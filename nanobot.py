@@ -119,6 +119,8 @@ DEFAULT_CONFIG = {
     "max_connections_per_ip": 50,
     "battery_crit_pct": 10,
     "quiet_mode": False,
+    "enable_power_monitor": True,
+    "power_warn_watts": 30,
     "allowed_ports": [22, 53, 631],
     "allowed_root_processes": ["systemd", "sshd", "cron", "dbus-daemon", "agetty", "login", "sudo", "polkitd", "rsyslogd", "systemd-journald", "systemd-logind", "systemd-resolved", "systemd-timesyncd", "systemd-udevd", "networkd-dispatcher", "NetworkManager", "wpa_supplicant", "dockerd", "containerd"],
 }
@@ -701,6 +703,32 @@ def check_thermals():
             log.info(f"{name}: {t}°C")
     if not found:
         log.info("No thermal sensors.")
+
+
+# --- CPU Power Monitoring via Intel RAPL (#8) ---
+
+def check_power():
+    """Monitor CPU power draw via Intel RAPL sysfs interface."""
+    if not cfg.get('enable_power_monitor', True):
+        return
+    rapl = '/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj'
+    if not os.path.isfile(rapl):
+        return
+    log_ok('Checking CPU power...')
+    try:
+        with open(rapl) as f:
+            e1 = int(f.read().strip())
+        time.sleep(1)
+        with open(rapl) as f:
+            e2 = int(f.read().strip())
+        watts = (e2 - e1) / 1_000_000
+        if watts > cfg.get('power_warn_watts', 30):
+            log.warning(f'High CPU power draw: {watts:.1f}W')
+            track('thermal_throttles')
+        else:
+            log_ok(f'CPU power: {watts:.1f}W')
+    except (ValueError, PermissionError, OSError):
+        pass
 
 
 # --- Network ---
@@ -3894,7 +3922,7 @@ def heal_full():
         check_disk_space, check_inodes,
         check_failed_services, check_critical_services,
         kill_zombies, check_high_cpu, check_oom,
-        check_memory, check_thermals,
+        check_memory, check_thermals, check_power,
         check_network, check_dns,
         check_security, check_open_ports, check_root_processes, check_firewall,
         check_time_sync, check_permissions,
