@@ -3,11 +3,8 @@
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch
-
-import pytest
 
 # Add project root to path so we can import nanobot
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

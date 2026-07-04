@@ -4155,7 +4155,7 @@ def show_cleanup():
             dirs.append((s, p))
     dirs.sort(reverse=True)
     for size, path in dirs[:20]:
-        p = pct_of = int(size * 100 / total)
+        p = int(size * 100 / total)
         mini = max(1, p * 20 // 100)
         c = R if p >= 10 else Y if p >= 5 else G
         name = f"~/{path.name}" if str(path).startswith(str(home)) else str(path)
@@ -4245,7 +4245,7 @@ def show_cleanup():
             mb = int(out.stdout.split()[0])
             if mb > 5000:
                 models = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=10)
-                model_list = "\n".join(f"      {l}" for l in models.stdout.strip().splitlines()[1:]) if models.returncode == 0 else ""
+                model_list = "\n".join(f"      {line}" for line in models.stdout.strip().splitlines()[1:]) if models.returncode == 0 else ""
                 label = f"Ollama models (remove unused)\n{model_list}" if model_list else "Ollama models"
                 suggestions.append((f"{mb}M", label, "ollama list  # then: ollama rm <name>"))
         except Exception:
@@ -4281,7 +4281,7 @@ def show_cleanup():
 
     # Interactive
     print(f"{B}═══ CLEANUP ═══{Z}\n")
-    print(f"  Enter numbers (e.g. '1 3 5'), 'all', or 'q': ", end="", flush=True)
+    print("  Enter numbers (e.g. '1 3 5'), 'all', or 'q': ", end="", flush=True)
     try:
         choice = input().strip()
     except (EOFError, KeyboardInterrupt):
