@@ -15,7 +15,8 @@ check: lint
 	@echo "All checks passed."
 
 test:
-	@echo "==> tests (none yet)"
+	@echo "==> pytest"
+	@python3 -m pytest tests/ -v
 	@echo "All tests passed."
 
 ci: test check
