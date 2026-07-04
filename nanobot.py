@@ -116,6 +116,7 @@ DEFAULT_CONFIG = {
     "watched_configs": ["/etc/passwd", "/etc/shadow", "/etc/group", "/etc/sudoers", "/etc/ssh/sshd_config", "/etc/fstab"],
     "max_connections_per_ip": 50,
     "battery_crit_pct": 10,
+    "allowed_ports": [22, 53, 631],
 }
 
 shutdown_requested = False
@@ -773,6 +774,30 @@ def check_security():
         log.info(f"Open ports:\n{out}")
 
     log.info("Security checks done.")
+
+
+def check_open_ports():
+    """Flag listening ports not in the allowlist."""
+    log.info("Checking open ports against allowlist...")
+    allowed = cfg.get('allowed_ports', [22, 53, 631])
+    _, out = run("ss -tlnp | tail -n +2")
+    if not out:
+        return
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        # Extract port from listen address (e.g. 0.0.0.0:8080 or [::]:22 or *:53)
+        addr = parts[3]
+        port = addr.rsplit(':', 1)[-1]
+        if port.isdigit() and int(port) not in allowed:
+            # Skip localhost-only ports
+            if '127.0.0.1' in addr or '::1' in addr:
+                continue
+            process = parts[5] if len(parts) > 5 else "unknown"
+            log.warning(f"Unexpected open port: {port} ({process})")
+            track('security_fixes')
+    log.info("Port allowlist check done.")
 
 
 def check_firewall():
@@ -3750,7 +3775,7 @@ def heal_full():
         kill_zombies, check_high_cpu, check_oom,
         check_memory, check_thermals,
         check_network, check_dns,
-        check_security, check_firewall,
+        check_security, check_open_ports, check_firewall,
         check_time_sync, check_permissions,
         check_kernel_panics, check_crash_dumps,
         check_log_sizes,
