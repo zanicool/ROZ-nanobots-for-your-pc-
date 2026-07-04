@@ -36,6 +36,8 @@ DEFAULT_CONFIG = {
     "enable_firewall_check": True,
     "enable_time_sync": True,
     "enable_permission_heal": True,
+    "enable_ups_check": True,
+    "ups_name": "riello@localhost",
 }
 
 shutdown_requested = False
@@ -94,7 +96,7 @@ def load_stats():
         "smart_warnings": 0, "crash_recoveries": 0, "issues_total": 0,
         "permission_fixes": 0, "time_sync_fixes": 0, "firewall_fixes": 0,
         "gpu_fixes": 0, "swap_fixes": 0, "high_cpu_kills": 0,
-        "fstab_fixes": 0, "dpkg_lock_fixes": 0,
+        "fstab_fixes": 0, "dpkg_lock_fixes": 0, "ups_warnings": 0,
         "last_run": None, "uptime_start": datetime.now().isoformat(),
     }
     try:
@@ -704,6 +706,67 @@ def check_permissions():
 
 # --- Kernel Panics ---
 
+def check_ups():
+    """Check UPS availability and monitoring via NUT."""
+    if not cfg.get("enable_ups_check", True):
+        return
+    log.info("Checking UPS status...")
+
+    # Check if NUT is installed
+    if not shutil.which("upsc"):
+        log.warning("UPS: NUT not installed. Install with: apt install nut-client")
+        track("ups_warnings")
+        return
+
+    # Check if nut-monitor (upsmon) is running = subscribed to events
+    rc, _ = run("systemctl is-active nut-monitor 2>/dev/null")
+    if rc != 0:
+        log.warning("UPS: nut-monitor not active! Starting...")
+        run("systemctl start nut-monitor")
+        rc_retry, _ = run("systemctl is-active nut-monitor 2>/dev/null")
+        if rc_retry != 0:
+            log.error("UPS: nut-monitor failed to start. Not subscribed to shutdown events!")
+            track("ups_warnings")
+            return
+        else:
+            log.info("UPS: nut-monitor started successfully.")
+            track("ups_warnings")
+
+    # Check UPS reachability and status
+    ups_name = cfg.get("ups_name", "riello@localhost")
+    rc, out = run(f"upsc {ups_name} ups.status 2>/dev/null")
+    if rc != 0 or not out:
+        log.warning(f"UPS: Cannot reach {ups_name}. Check NUT driver and server.")
+        track("ups_warnings")
+        return
+
+    status = out.strip()
+    if "OL" in status:
+        log.info(f"UPS: Online ({status})")
+    elif "OB" in status:
+        log.warning(f"UPS: ON BATTERY ({status})! Power outage detected.")
+        track("ups_warnings")
+    elif "LB" in status:
+        log.error(f"UPS: LOW BATTERY ({status})! Shutdown imminent.")
+        track("ups_warnings")
+    else:
+        log.warning(f"UPS: Unknown status: {status}")
+        track("ups_warnings")
+
+    # Check battery charge if available
+    rc, charge = run(f"upsc {ups_name} battery.charge 2>/dev/null")
+    if rc == 0 and charge:
+        try:
+            pct = float(charge)
+            if pct < 50:
+                log.warning(f"UPS: Battery charge low: {pct}%")
+                track("ups_warnings")
+            else:
+                log.info(f"UPS: Battery charge {pct}%")
+        except ValueError:
+            pass
+
+
 def check_kernel_panics():
     log.info("Checking kernel panics...")
     _, out = run("journalctl -k -p emerg,alert,crit --since '1 hour ago' --no-pager -q 2>/dev/null")
@@ -821,6 +884,7 @@ def heal_full():
         check_network, check_dns,
         check_security, check_firewall,
         check_time_sync, check_permissions,
+        check_ups,
         check_kernel_panics, check_crash_dumps,
         check_log_sizes,
     ]:
