@@ -1,6 +1,6 @@
 # 🤖 ROZ NanoBots v6
 
-A self-healing Linux daemon that automatically detects and fixes system issues — like Iron Man's nanobots, but for your PC.
+A self-healing Linux daemon that automatically detects and fixes system issues — nanoscale repair bots for your PC.
 
 ## What It Does
 
