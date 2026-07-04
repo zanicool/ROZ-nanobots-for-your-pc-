@@ -123,7 +123,9 @@ def run(cmd, timeout=60):
     try:
         if isinstance(cmd, str):
             cmd = ["bash", "-c", cmd]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(  # noqa: S603
+            cmd, capture_output=True, text=True, timeout=timeout
+        )
         return r.returncode, r.stdout.strip()
     except subprocess.TimeoutExpired:
         log.warning(f"Command timed out: {cmd}")
@@ -430,32 +432,34 @@ def show_status():
     print("╚══════════════════════════════════════╝\n")
 
 
-def main():
-    global stats
-    if len(sys.argv) > 1:
-        cmd = sys.argv[1]
-        if cmd == "status":
-            show_status()
-            return
-        if cmd == "heal":
-            heal_full()
-            save_stats(stats)
-            return
-        if cmd == "quick":
-            heal_quick()
-            return
-        if cmd == "config":
-            os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-            if not os.path.exists(CONFIG_FILE):
-                with open(CONFIG_FILE, "w") as f:
-                    json.dump(DEFAULT_CONFIG, f, indent=2)
-                print(f"Config created: {CONFIG_FILE}")
-            else:
-                print(f"Config exists: {CONFIG_FILE}")
-            return
+def handle_cli():
+    """Handle CLI subcommands. Returns True if handled."""
+    if len(sys.argv) <= 1:
+        return False
+    cmd = sys.argv[1]
+    if cmd == "status":
+        show_status()
+    elif cmd == "heal":
+        heal_full()
+        save_stats(stats)
+    elif cmd == "quick":
+        heal_quick()
+    elif cmd == "config":
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+        if not os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(DEFAULT_CONFIG, f, indent=2)
+            print(f"Config created: {CONFIG_FILE}")
+        else:
+            print(f"Config exists: {CONFIG_FILE}")
+    else:
         print(f"Usage: {sys.argv[0]} [status|heal|quick|config]")
-        return
+    return True
 
+
+def daemon_loop():
+    """Main daemon loop."""
+    global stats, shutdown_requested
     log.info("ROZ NanoBots v5 (macOS) activated.")
     log.info(
         f"Full heal every {cfg['interval']}s, "
@@ -487,6 +491,13 @@ def main():
 
     save_stats(stats)
     log.info("ROZ NanoBots v5 (macOS) shut down cleanly.")
+
+
+def main():
+    global stats
+    if handle_cli():
+        return
+    daemon_loop()
 
 
 if __name__ == "__main__":

@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """ROZ NanoBots v5 - Self-healing Linux system daemon."""
 
-import subprocess
-import logging
-import time
-import shutil
-import os
-import sys
 import json
+import logging
+import os
+import shutil
 import signal
-import re
+import subprocess
+import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -127,7 +126,9 @@ def run(cmd, timeout=120):
     try:
         if isinstance(cmd, str):
             cmd = ["bash", "-c", cmd]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(  # noqa: S603
+            cmd, capture_output=True, text=True, timeout=timeout
+        )
         return r.returncode, r.stdout.strip()
     except subprocess.TimeoutExpired:
         log.warning(f"Command timed out: {cmd}")
@@ -689,7 +690,7 @@ def check_permissions():
         return
     log.info("Checking critical permissions...")
     fixes = [
-        ("/tmp", "1777"), ("/var/tmp", "1777"),
+        ("/tmp", "1777"), ("/var/tmp", "1777"),  # noqa: S108
         ("/etc/shadow", "0640"), ("/etc/passwd", "0644"),
         ("/etc/group", "0644"), ("/etc/gshadow", "0640"),
     ]
