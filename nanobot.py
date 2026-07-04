@@ -116,6 +116,7 @@ DEFAULT_CONFIG = {
     "watched_configs": ["/etc/passwd", "/etc/shadow", "/etc/group", "/etc/sudoers", "/etc/ssh/sshd_config", "/etc/fstab"],
     "max_connections_per_ip": 50,
     "battery_crit_pct": 10,
+    "quiet_mode": False,
 }
 
 shutdown_requested = False
@@ -161,6 +162,15 @@ logging.basicConfig(
     handlers=handlers,
 )
 log = logging.getLogger("nanobot")
+
+
+# --- Quiet Mode Helper (#10) ---
+
+def log_ok(msg):
+    """Log info only when not in quiet mode."""
+    if not cfg.get('quiet_mode', False):
+        log.info(msg)
+
 
 # --- Stats ---
 
@@ -288,7 +298,7 @@ def fix_broken_packages():
     run("apt-get autoremove -y")
     if rc1 != 0 or rc2 != 0:
         track("packages_fixed")
-    log.info("Package repair done.")
+    log_ok("Package repair done.")
 
 
 def update_system():
@@ -304,7 +314,7 @@ def update_system():
 # --- Kernel Healing ---
 
 def check_kernel_health():
-    log.info("Checking kernel health...")
+    log_ok("Checking kernel health...")
     _, current = run("uname -r")
     if not current:
         return
@@ -343,7 +353,7 @@ def check_kernel_health():
 
 
 def rebuild_grub():
-    log.info("Checking GRUB...")
+    log_ok("Checking GRUB...")
     if os.path.exists("/boot/grub/grub.cfg"):
         rc, _ = run("update-grub")
         if rc != 0:
@@ -356,7 +366,7 @@ def rebuild_grub():
 # --- GPU Healing ---
 
 def check_gpu():
-    log.info("Checking GPU...")
+    log_ok("Checking GPU...")
     _, out = run("lspci | grep -iE 'VGA|3D|Display'")
     if not out:
         return
@@ -399,7 +409,7 @@ def check_gpu():
 def check_smart():
     if not cfg["enable_smart"]:
         return
-    log.info("Checking SMART disk health...")
+    log_ok("Checking SMART disk health...")
     if not shutil.which("smartctl"):
         log.info("smartmontools not installed, skipping.")
         return
@@ -437,7 +447,7 @@ def check_smart():
 # --- Filesystem Healing ---
 
 def check_filesystems():
-    log.info("Checking filesystems...")
+    log_ok("Checking filesystems...")
     _, out = run("mount | grep ' / '")
     if "ro," in out or ",ro " in out:
         log.warning("Root is READ-ONLY! Remounting...")
@@ -455,7 +465,7 @@ def check_filesystems():
 
 def check_fstab():
     """Verify all fstab entries are mountable."""
-    log.info("Checking fstab...")
+    log_ok("Checking fstab...")
     _, out = run("findmnt --verify --tab-file /etc/fstab 2>&1")
     if out and ("error" in out.lower() or "unknown" in out.lower()):
         log.warning(f"fstab issues:\n{out}")
@@ -476,7 +486,7 @@ def check_fstab():
 
 
 def check_disk_space():
-    log.info("Checking disk space...")
+    log_ok("Checking disk space...")
     total, used, free = shutil.disk_usage("/")
     pct = used / total * 100
     if pct > cfg["disk_crit_pct"]:
@@ -507,7 +517,7 @@ def check_disk_space():
 
 
 def check_inodes():
-    log.info("Checking inodes...")
+    log_ok("Checking inodes...")
     _, out = run("df -i / | tail -1 | awk '{print $5}' | tr -d '%'")
     if out and out.isdigit() and int(out) > 90:
         log.warning(f"Inodes {out}%! Cleaning...")
@@ -523,7 +533,7 @@ def check_inodes():
 restart_counts: dict[str, int] = {}
 
 def check_failed_services():
-    log.info("Checking failed services...")
+    log_ok("Checking failed services...")
     _, out = run("systemctl --failed --no-legend --no-pager --plain")
     if out:
         for line in out.splitlines():
@@ -545,7 +555,7 @@ def check_failed_services():
 
 
 def check_critical_services():
-    log.info("Checking critical services...")
+    log_ok("Checking critical services...")
     all_svcs = cfg["critical_services"] + cfg["watched_services"]
     for svc in all_svcs:
         _, out = run(f"systemctl is-active {svc}")
@@ -560,7 +570,7 @@ def check_critical_services():
 # --- Process Healing ---
 
 def kill_zombies():
-    log.info("Checking zombies...")
+    log_ok("Checking zombies...")
     _, out = run("ps aux | awk '$8==\"Z\" {print $2}'")
     if out:
         for pid in out.splitlines():
@@ -581,7 +591,7 @@ def kill_zombies():
 
 
 def check_high_cpu():
-    log.info("Checking for runaway processes...")
+    log_ok("Checking for runaway processes...")
     _, out = run("ps aux --sort=-%cpu | awk 'NR>1 && $3>95 {print $2, $11, $3}'")
     if out:
         for line in out.splitlines():
@@ -608,7 +618,7 @@ def check_high_cpu():
 
 
 def check_oom():
-    log.info("Checking OOM events...")
+    log_ok("Checking OOM events...")
     _, out = run("journalctl -b --grep='Out of memory\\|oom-kill\\|invoked oom-killer' --no-pager -q 2>/dev/null | tail -5")
     if out:
         log.warning(f"OOM events:\n{out}")
@@ -620,7 +630,7 @@ def check_oom():
 # --- Memory ---
 
 def check_memory():
-    log.info("Checking memory...")
+    log_ok("Checking memory...")
     _, out = run("free -m | awk '/Mem:/{print $7}'")
     if out and out.isdigit() and int(out) < cfg["mem_crit_mb"]:
         log.warning(f"Low memory ({out}MB)! Clearing caches...")
@@ -651,7 +661,7 @@ def check_memory():
 # --- Thermal ---
 
 def check_thermals():
-    log.info("Checking thermals...")
+    log_ok("Checking thermals...")
     found = False
     for zone in sorted(Path("/sys/class/thermal/").glob("thermal_zone*/temp")):
         try:
@@ -668,13 +678,13 @@ def check_thermals():
         else:
             log.info(f"{name}: {t}°C")
     if not found:
-        log.info("No thermal sensors.")
+        log_ok("No thermal sensors.")
 
 
 # --- Network ---
 
 def check_network():
-    log.info("Checking network...")
+    log_ok("Checking network...")
     targets = ["8.8.8.8", "1.1.1.1", "9.9.9.9"]
     reachable = False
     for t in targets:
@@ -703,7 +713,7 @@ def check_network():
 
 
 def check_dns():
-    log.info("Checking DNS...")
+    log_ok("Checking DNS...")
     rc, _ = run("host -W 3 google.com 2>/dev/null")
     if rc != 0:
         # Try nslookup as fallback check
@@ -778,7 +788,7 @@ def check_security():
 def check_firewall():
     if not cfg["enable_firewall_check"]:
         return
-    log.info("Checking firewall...")
+    log_ok("Checking firewall...")
     # Check if ufw or iptables has rules
     if shutil.which("ufw"):
         _, out = run("ufw status 2>/dev/null")
@@ -798,7 +808,7 @@ def check_firewall():
 def check_time_sync():
     if not cfg["enable_time_sync"]:
         return
-    log.info("Checking time sync...")
+    log_ok("Checking time sync...")
     _, out = run("timedatectl show --property=NTPSynchronized --value 2>/dev/null")
     if out == "no":
         log.warning("Time not synced! Enabling NTP...")
@@ -814,7 +824,7 @@ def check_time_sync():
 def check_permissions():
     if not cfg["enable_permission_heal"]:
         return
-    log.info("Checking critical permissions...")
+    log_ok("Checking critical permissions...")
     fixes = [
         ("/tmp", "1777"), ("/var/tmp", "1777"),
         ("/etc/shadow", "0640"), ("/etc/passwd", "0644"),
@@ -834,7 +844,7 @@ def check_permissions():
 # --- Kernel Panics ---
 
 def check_kernel_panics():
-    log.info("Checking kernel panics...")
+    log_ok("Checking kernel panics...")
     _, out = run("journalctl -k -p emerg,alert,crit --since '1 hour ago' --no-pager -q 2>/dev/null")
     if out:
         log.warning(f"Critical kernel messages:\n{out[:500]}")
@@ -847,7 +857,7 @@ def check_kernel_panics():
 # --- Crash Recovery ---
 
 def check_crash_dumps():
-    log.info("Checking crash dumps...")
+    log_ok("Checking crash dumps...")
     crash_dir = "/var/crash"
     if os.path.isdir(crash_dir):
         crashes = os.listdir(crash_dir)
@@ -863,7 +873,7 @@ def check_crash_dumps():
 # --- Log Management ---
 
 def check_log_sizes():
-    log.info("Checking log sizes...")
+    log_ok("Checking log sizes...")
     _, out = run("du -sm /var/log 2>/dev/null | awk '{print $1}'")
     if out and out.isdigit() and int(out) > cfg["max_log_size_mb"]:
         log.warning(f"/var/log is {out}MB! Rotating...")
@@ -881,7 +891,7 @@ def check_docker():
         return
     if not shutil.which("docker"):
         return
-    log.info("Checking Docker...")
+    log_ok("Checking Docker...")
     _, out = run("systemctl is-active docker 2>/dev/null")
     if out != "active":
         log.warning("Docker daemon not running! Starting...")
@@ -910,7 +920,7 @@ def check_docker():
 def check_usb():
     if not cfg["enable_usb_monitor"]:
         return
-    log.info("Checking USB devices...")
+    log_ok("Checking USB devices...")
     _, out = run("journalctl -b --grep='USB disconnect\\|usb.*error\\|device descriptor read' --no-pager -q 2>/dev/null | tail -10")
     if out:
         log.warning(f"USB issues detected:\n{out[:500]}")
@@ -938,7 +948,7 @@ def check_usb():
 def check_intrusions():
     if not cfg["enable_network_intrusion"]:
         return
-    log.info("Checking for network intrusions...")
+    log_ok("Checking for network intrusions...")
     # Check for excessive connections from single IPs
     _, out = run("ss -tn state established | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | sort -rn | head -10")
     if out:
@@ -977,7 +987,7 @@ config_hashes: dict[str, str] = {}
 def check_config_watchdog():
     if not cfg["enable_config_watchdog"]:
         return
-    log.info("Checking config file integrity...")
+    log_ok("Checking config file integrity...")
     global config_hashes
     for filepath in cfg["watched_configs"]:
         if not os.path.exists(filepath):
@@ -1009,7 +1019,7 @@ def check_battery():
         bat_path = Path("/sys/class/power_supply/BAT1")
     if not bat_path.exists():
         return
-    log.info("Checking battery...")
+    log_ok("Checking battery...")
     try:
         capacity = int((bat_path / "capacity").read_text().strip())
         status = (bat_path / "status").read_text().strip()
@@ -1039,7 +1049,7 @@ def check_battery():
 def check_coredumps():
     if not cfg["enable_coredump"]:
         return
-    log.info("Checking coredumps...")
+    log_ok("Checking coredumps...")
     cleaned = 0
     for d in ["/var/lib/systemd/coredump", "/var/crash"]:
         if not os.path.isdir(d):
@@ -1068,7 +1078,7 @@ def check_coredumps():
 def check_entropy():
     if not cfg["enable_entropy"]:
         return
-    log.info("Checking entropy...")
+    log_ok("Checking entropy...")
     try:
         entropy = int(Path("/proc/sys/kernel/random/entropy_avail").read_text().strip())
     except (ValueError, OSError):
@@ -1088,7 +1098,7 @@ def check_entropy():
 def check_journal_health():
     if not cfg["enable_journal_health"]:
         return
-    log.info("Checking journal health...")
+    log_ok("Checking journal health...")
     _, out = run("journalctl --verify 2>&1 | grep -c FAIL")
     if out and out.isdigit() and int(out) > 0:
         log.warning(f"Corrupt journal entries: {out}. Rotating...")
@@ -1112,7 +1122,7 @@ def check_journal_health():
 def check_duplicate_processes():
     if not cfg["enable_duplicate_process"]:
         return
-    log.info("Checking duplicate processes...")
+    log_ok("Checking duplicate processes...")
     # Processes that should only have one instance
     singles = ["NetworkManager", "systemd-resolved", "systemd-timesyncd", "cupsd", "bluetoothd"]
     for proc in singles:
@@ -1129,7 +1139,7 @@ def check_duplicate_processes():
 def check_disk_latency():
     if not cfg["enable_disk_latency"]:
         return
-    log.info("Checking disk latency...")
+    log_ok("Checking disk latency...")
     _, out = run("iostat -x 1 2 2>/dev/null | tail -10")
     if not out and not shutil.which("iostat"):
         return
@@ -1152,7 +1162,7 @@ def check_disk_latency():
 def check_orphan_packages():
     if not cfg["enable_orphan_cleanup"]:
         return
-    log.info("Checking orphan packages...")
+    log_ok("Checking orphan packages...")
     _, out = run("apt list --installed 2>/dev/null | grep -c 'residual-config'")
     if out and out.isdigit() and int(out) > 0:
         run("dpkg --purge $(dpkg -l | awk '/^rc/{print $2}') 2>/dev/null")
@@ -1170,7 +1180,7 @@ def check_orphan_packages():
 def check_broken_symlinks():
     if not cfg["enable_symlink_heal"]:
         return
-    log.info("Checking broken symlinks...")
+    log_ok("Checking broken symlinks...")
     fixed = 0
     for d in ["/usr/bin", "/usr/lib", "/etc/alternatives"]:
         _, out = run(f"find {d} -maxdepth 1 -xtype l 2>/dev/null")
@@ -1195,7 +1205,7 @@ def check_broken_symlinks():
 def check_hostname():
     if not cfg["enable_hostname_check"]:
         return
-    log.info("Checking hostname...")
+    log_ok("Checking hostname...")
     _, hostname = run("hostname")
     if not hostname or hostname == "(none)" or hostname == "localhost":
         log.warning(f"Invalid hostname: '{hostname}'")
@@ -1218,7 +1228,7 @@ def check_hostname():
 def check_locale():
     if not cfg["enable_locale_check"]:
         return
-    log.info("Checking locale...")
+    log_ok("Checking locale...")
     _, out = run("locale 2>&1")
     if "Cannot set" in out or "warning" in out.lower():
         log.warning(f"Locale issues:\n{out[:300]}")
@@ -1236,7 +1246,7 @@ def check_xorg():
         return
     if not os.path.exists("/var/log/Xorg.0.log"):
         return
-    log.info("Checking Xorg...")
+    log_ok("Checking Xorg...")
     _, out = run("grep '(EE)' /var/log/Xorg.0.log 2>/dev/null | grep -v '(WW)' | tail -10")
     if out:
         errors = len(out.splitlines())
@@ -1257,7 +1267,7 @@ def check_xorg():
 def check_audio():
     if not cfg["enable_audio_heal"]:
         return
-    log.info("Checking audio...")
+    log_ok("Checking audio...")
     _, out = run("pactl info 2>/dev/null")
     if not out or "Connection failure" in out:
         log.warning("PulseAudio not responding! Restarting...")
@@ -1287,7 +1297,7 @@ def check_bluetooth():
         return
     if not shutil.which("bluetoothctl"):
         return
-    log.info("Checking Bluetooth...")
+    log_ok("Checking Bluetooth...")
     _, out = run("systemctl is-active bluetooth 2>/dev/null")
     if out == "failed":
         log.warning("Bluetooth service failed! Restarting...")
@@ -1307,7 +1317,7 @@ def check_bluetooth():
 def check_cron():
     if not cfg["enable_cron_heal"]:
         return
-    log.info("Checking cron...")
+    log_ok("Checking cron...")
     _, out = run("systemctl is-active cron 2>/dev/null")
     if out != "active":
         log.warning("Cron not running! Starting...")
@@ -1333,7 +1343,7 @@ def check_cron():
 def check_tmpfiles():
     if not cfg["enable_tmpfiles"]:
         return
-    log.info("Checking tmpfiles...")
+    log_ok("Checking tmpfiles...")
     # Ensure /tmp is writable and has correct permissions
     if not os.access("/tmp", os.W_OK):
         log.warning("/tmp not writable! Fixing...")
@@ -1387,7 +1397,7 @@ def check_antivirus():
 def check_rootkits():
     if not cfg["enable_rootkit_check"]:
         return
-    log.info("Checking for rootkits...")
+    log_ok("Checking for rootkits...")
     if shutil.which("chkrootkit"):
         _, out = run("chkrootkit -q 2>/dev/null", timeout=300)
         if out and "INFECTED" in out:
@@ -1415,7 +1425,7 @@ def check_rootkits():
 def check_desktop():
     if not cfg["enable_desktop_heal"]:
         return
-    log.info("Checking desktop...")
+    log_ok("Checking desktop...")
     _, de = run("echo $XDG_CURRENT_DESKTOP")
     if not de:
         _, de = run("cat /etc/X11/default-display-manager 2>/dev/null")
@@ -1448,7 +1458,7 @@ def check_desktop():
 def check_flatpak():
     if not cfg["enable_flatpak_heal"]:
         return
-    log.info("Checking Flatpak/Snap...")
+    log_ok("Checking Flatpak/Snap...")
     if shutil.which("flatpak"):
         rc, out = run("flatpak repair --user 2>&1", timeout=120)
         if "error" in (out or "").lower():
@@ -1502,7 +1512,7 @@ def check_backup():
 def check_port_scan_protect():
     if not cfg["enable_port_scan_protect"]:
         return
-    log.info("Checking for port scans...")
+    log_ok("Checking for port scans...")
     _, out = run("journalctl --since '10 min ago' --grep='SYN' --no-pager -q 2>/dev/null | wc -l")
     if out and out.isdigit() and int(out) > 100:
         log.warning(f"Possible port scan: {out} SYN packets in 10 min!")
@@ -1518,7 +1528,7 @@ def check_port_scan_protect():
 def check_login_monitor():
     if not cfg["enable_login_monitor"]:
         return
-    log.info("Checking logins...")
+    log_ok("Checking logins...")
     _, out = run("last -n 20 --time-format iso 2>/dev/null")
     if out:
         for line in out.splitlines():
@@ -1544,7 +1554,7 @@ def check_login_monitor():
 def check_ppa_heal():
     if not cfg["enable_ppa_heal"]:
         return
-    log.info("Checking APT repositories...")
+    log_ok("Checking APT repositories...")
     rc, out = run("apt-get update 2>&1 | grep -iE 'err|fail|expired|no longer has'", timeout=120)
     if out:
         log.warning(f"Broken repos:\n{out[:500]}")
@@ -1569,7 +1579,7 @@ def check_ppa_heal():
 def check_fonts():
     if not cfg["enable_font_heal"]:
         return
-    log.info("Checking fonts...")
+    log_ok("Checking fonts...")
     _, out = run("fc-list 2>/dev/null | wc -l")
     if out and out.isdigit() and int(out) < 10:
         log.warning(f"Only {out} fonts found! Rebuilding cache...")
@@ -1589,7 +1599,7 @@ def check_printer():
         return
     if not shutil.which("lpstat"):
         return
-    log.info("Checking printers...")
+    log_ok("Checking printers...")
     _, out = run("systemctl is-active cups 2>/dev/null")
     if out == "failed":
         log.warning("CUPS failed! Restarting...")
@@ -1608,7 +1618,7 @@ def check_printer():
 def check_suspend():
     if not cfg["enable_suspend_heal"]:
         return
-    log.info("Checking suspend/resume...")
+    log_ok("Checking suspend/resume...")
     _, errors = run("journalctl -b --grep='PM:.*failed\\|resume.*error' --no-pager -q 2>/dev/null | tail -5")
     if errors:
         log.warning(f"Suspend/resume errors:\n{errors[:300]}")
@@ -1623,7 +1633,7 @@ def check_suspend():
 def check_clock_drift():
     if not cfg["enable_clock_drift"]:
         return
-    log.info("Checking clock drift...")
+    log_ok("Checking clock drift...")
     _, out = run("timedatectl show --property=NTPSynchronized --value 2>/dev/null")
     if out == "no":
         log.warning("Clock not synced!")
@@ -1639,7 +1649,7 @@ def check_clock_drift():
 def check_zombie_parents():
     if not cfg["enable_zombie_parent_heal"]:
         return
-    log.info("Checking zombie parent processes...")
+    log_ok("Checking zombie parent processes...")
     _, out = run("ps aux | awk '$8==\"Z\" {print $2}'")
     if not out:
         return
@@ -1666,7 +1676,7 @@ def check_zombie_parents():
 def check_oom_scores():
     if not cfg["enable_oom_score"]:
         return
-    log.info("Checking OOM scores...")
+    log_ok("Checking OOM scores...")
     critical = ["sshd", "systemd-journald", "dbus-daemon", "cron"]
     for proc in critical:
         _, pids = run(f"pgrep {proc} 2>/dev/null")
@@ -1690,7 +1700,7 @@ def check_oom_scores():
 def check_sysctl():
     if not cfg["enable_sysctl_heal"]:
         return
-    log.info("Checking sysctl settings...")
+    log_ok("Checking sysctl settings...")
     hardened = {
         "net.ipv4.tcp_syncookies": "1",
         "net.ipv4.conf.all.rp_filter": "1",
@@ -1716,7 +1726,7 @@ def check_sysctl():
 def check_apt_sources():
     if not cfg["enable_apt_source_heal"]:
         return
-    log.info("Checking APT source integrity...")
+    log_ok("Checking APT source integrity...")
     _, out = run("apt-get update 2>&1 | grep -i 'duplicate'")
     if out:
         log.warning(f"Duplicate APT sources:\n{out[:300]}")
@@ -1734,7 +1744,7 @@ def check_apt_sources():
 def check_user_integrity():
     if not cfg["enable_user_integrity"]:
         return
-    log.info("Checking user integrity...")
+    log_ok("Checking user integrity...")
     _, out = run("awk -F: '$3==0 && $1!=\"root\" {print $1}' /etc/passwd")
     if out:
         log.warning(f"Non-root UID 0 accounts: {out}")
@@ -1759,7 +1769,7 @@ def check_user_integrity():
 def check_mounts():
     if not cfg["enable_mount_heal"]:
         return
-    log.info("Checking mount points...")
+    log_ok("Checking mount points...")
     _, out = run("mount | grep -E 'nfs|cifs|smbfs'")
     if out:
         for line in out.splitlines():
@@ -1782,7 +1792,7 @@ def check_mounts():
 def check_arp_spoof():
     if not cfg["enable_arp_spoof_detect"]:
         return
-    log.info("Checking ARP table...")
+    log_ok("Checking ARP table...")
     _, out = run("ip neigh show | awk '{print $5}' | sort | uniq -d")
     if out:
         log.warning(f"Duplicate MACs in ARP table (possible ARP spoof):\n{out}")
@@ -1795,7 +1805,7 @@ def check_arp_spoof():
 def check_dns_leak():
     if not cfg["enable_dns_leak_check"]:
         return
-    log.info("Checking DNS config...")
+    log_ok("Checking DNS config...")
     _, out = run("resolvectl status 2>/dev/null | grep 'DNS Servers' | head -5")
     if not out:
         _, out = run("cat /etc/resolv.conf | grep nameserver")
@@ -1814,7 +1824,7 @@ def check_dns_leak():
 def check_open_file_limit():
     if not cfg["enable_open_file_limit"]:
         return
-    log.info("Checking open file limits...")
+    log_ok("Checking open file limits...")
     _, out = run("cat /proc/sys/fs/file-nr")
     if out:
         parts = out.split()
@@ -1833,7 +1843,7 @@ def check_open_file_limit():
 def check_kernel_modules():
     if not cfg["enable_kernel_module_check"]:
         return
-    log.info("Checking kernel modules...")
+    log_ok("Checking kernel modules...")
     _, out = run("dmesg 2>/dev/null | grep -i 'module verification failed'")
     if out:
         log.warning(f"Unsigned kernel modules:\n{out[:300]}")
@@ -1849,7 +1859,7 @@ def check_kernel_modules():
 def check_cgroups():
     if not cfg["enable_cgroup_heal"]:
         return
-    log.info("Checking cgroups...")
+    log_ok("Checking cgroups...")
     _, out = run("systemctl status 2>/dev/null | grep -i 'degraded'")
     if out:
         log.warning("System in degraded state!")
@@ -1865,7 +1875,7 @@ def check_cgroups():
 def check_dmesg():
     if not cfg["enable_dmesg_monitor"]:
         return
-    log.info("Checking dmesg...")
+    log_ok("Checking dmesg...")
     _, out = run("dmesg --level=err,crit,alert,emerg -T 2>/dev/null | tail -20")
     if out:
         log.warning(f"Kernel errors:\n{out[:500]}")
@@ -1878,7 +1888,7 @@ def check_dmesg():
 def check_gpu_temp():
     if not cfg["enable_gpu_temp"]:
         return
-    log.info("Checking GPU temperature...")
+    log_ok("Checking GPU temperature...")
     if shutil.which("nvidia-smi"):
         _, out = run("nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader 2>/dev/null")
         if out and out.strip().isdigit():
@@ -1898,7 +1908,7 @@ def check_gpu_temp():
 def check_fans():
     if not cfg["enable_fan_monitor"]:
         return
-    log.info("Checking fans...")
+    log_ok("Checking fans...")
     _, out = run("sensors 2>/dev/null | grep -i fan | grep -v '0 RPM'")
     if out:
         log.info(f"Fans:\n{out}")
@@ -1916,7 +1926,7 @@ def check_lid_switch():
         return
     if not os.path.exists("/etc/systemd/logind.conf"):
         return
-    log.info("Checking lid switch config...")
+    log_ok("Checking lid switch config...")
     _, out = run("grep -E '^HandleLidSwitch' /etc/systemd/logind.conf 2>/dev/null")
     if not out:
         log.info("Lid switch using defaults.")
@@ -1928,7 +1938,7 @@ def check_lid_switch():
 def check_screen_lock():
     if not cfg["enable_screen_lock"]:
         return
-    log.info("Checking screen lock...")
+    log_ok("Checking screen lock...")
     _, out = run("gsettings get org.cinnamon.desktop.screensaver lock-enabled 2>/dev/null")
     if out and out.strip() == "false":
         log.warning("Screen lock disabled! Enabling...")
@@ -1944,7 +1954,7 @@ def check_ssh_harden():
         return
     if not os.path.exists("/etc/ssh/sshd_config"):
         return
-    log.info("Checking SSH hardening...")
+    log_ok("Checking SSH hardening...")
     checks = {
         "PermitRootLogin": "no",
         "PasswordAuthentication": "yes",
@@ -1971,7 +1981,7 @@ def check_ssh_harden():
 def check_failed_mount_retry():
     if not cfg["enable_failed_mount_retry"]:
         return
-    log.info("Checking failed mounts...")
+    log_ok("Checking failed mounts...")
     _, out = run("systemctl --failed --no-legend | grep mount")
     if out:
         for line in out.splitlines():
@@ -1990,7 +2000,7 @@ def check_smart_selftest():
         return
     if not shutil.which("smartctl"):
         return
-    log.info("Checking SMART self-test schedule...")
+    log_ok("Checking SMART self-test schedule...")
     _, out = run("lsblk -dno NAME,ROTA | awk '$2==0{print $1}'")
     if out:
         for disk in out.splitlines():
@@ -2010,7 +2020,7 @@ def check_smart_selftest():
 def check_network_speed():
     if not cfg["enable_network_speed"]:
         return
-    log.info("Checking network speed...")
+    log_ok("Checking network speed...")
     _, iface = run("ip route | awk '/default/{print $5}' | head -1")
     if iface:
         _, speed = run(f"cat /sys/class/net/{iface.strip()}/speed 2>/dev/null")
@@ -2029,7 +2039,7 @@ def check_network_speed():
 def check_mac_spoof():
     if not cfg["enable_mac_spoof_detect"]:
         return
-    log.info("Checking MAC addresses...")
+    log_ok("Checking MAC addresses...")
     _, out = run("ip link show | grep -E 'link/ether' | awk '{print $2}'")
     if out:
         for mac in out.splitlines():
@@ -2045,7 +2055,7 @@ def check_mac_spoof():
 def check_process_limit():
     if not cfg["enable_process_limit"]:
         return
-    log.info("Checking process limits...")
+    log_ok("Checking process limits...")
     _, out = run("ps aux --no-headers | wc -l")
     if out and out.isdigit() and int(out) > 1000:
         log.warning(f"High process count: {out}")
@@ -2062,7 +2072,7 @@ def check_process_limit():
 def check_file_descriptors():
     if not cfg["enable_file_descriptor_heal"]:
         return
-    log.info("Checking file descriptors...")
+    log_ok("Checking file descriptors...")
     _, out = run("cat /proc/sys/fs/file-nr | awk '{print $1, $3}'")
     if out:
         parts = out.split()
@@ -2080,7 +2090,7 @@ def check_file_descriptors():
 def check_shared_memory():
     if not cfg["enable_shared_memory_heal"]:
         return
-    log.info("Checking shared memory...")
+    log_ok("Checking shared memory...")
     _, out = run("ipcs -m 2>/dev/null | grep -c '^0x'")
     if out and out.isdigit() and int(out) > 100:
         log.warning(f"Many shared memory segments: {out}")
@@ -2094,7 +2104,7 @@ def check_shared_memory():
 def check_semaphores():
     if not cfg["enable_semaphore_heal"]:
         return
-    log.info("Checking semaphores...")
+    log_ok("Checking semaphores...")
     _, out = run("ipcs -s 2>/dev/null | grep -c '^0x'")
     if out and out.isdigit() and int(out) > 100:
         log.warning(f"Many semaphore arrays: {out}")
@@ -2107,7 +2117,7 @@ def check_semaphores():
 def check_dbus():
     if not cfg["enable_dbus_heal"]:
         return
-    log.info("Checking D-Bus...")
+    log_ok("Checking D-Bus...")
     _, out = run("systemctl is-active dbus 2>/dev/null")
     if out != "active":
         log.warning("D-Bus not active! Restarting...")
@@ -2126,7 +2136,7 @@ def check_dbus():
 def check_polkit():
     if not cfg["enable_polkit_heal"]:
         return
-    log.info("Checking PolicyKit...")
+    log_ok("Checking PolicyKit...")
     _, out = run("systemctl is-active polkit 2>/dev/null")
     if out != "active":
         log.warning("PolicyKit not running! Starting...")
@@ -2142,7 +2152,7 @@ def check_apparmor():
         return
     if not shutil.which("aa-status"):
         return
-    log.info("Checking AppArmor...")
+    log_ok("Checking AppArmor...")
     _, out = run("aa-status 2>/dev/null | head -5")
     if out:
         log.info(f"AppArmor: {out.splitlines()[0] if out.splitlines() else 'unknown'}")
@@ -2157,7 +2167,7 @@ def check_apparmor():
 def check_grub_password():
     if not cfg["enable_grub_password_check"]:
         return
-    log.info("Checking GRUB security...")
+    log_ok("Checking GRUB security...")
     _, out = run("grep -c 'password' /etc/grub.d/* 2>/dev/null")
     has_password = any(int(x.split(":")[-1]) > 0 for x in out.splitlines() if ":" in x and x.split(":")[-1].isdigit()) if out else False
     if not has_password:
@@ -2171,7 +2181,7 @@ def check_grub_password():
 def check_core_pattern():
     if not cfg["enable_core_pattern_check"]:
         return
-    log.info("Checking core pattern...")
+    log_ok("Checking core pattern...")
     _, out = run("cat /proc/sys/kernel/core_pattern")
     if out and "|" not in out and out.strip() == "core":
         log.info("Core dumps go to current dir. Setting to systemd-coredump...")
@@ -2185,7 +2195,7 @@ def check_core_pattern():
 def check_module_blacklist():
     if not cfg["enable_module_blacklist"]:
         return
-    log.info("Checking module blacklist...")
+    log_ok("Checking module blacklist...")
     dangerous = ["firewire-core", "firewire-ohci", "firewire-sbp2", "thunderbolt"]
     for mod in dangerous:
         _, out = run(f"lsmod | grep ^{mod}")
@@ -2199,7 +2209,7 @@ def check_module_blacklist():
 def check_ipv6():
     if not cfg["enable_ipv6_check"]:
         return
-    log.info("Checking IPv6...")
+    log_ok("Checking IPv6...")
     _, out = run("cat /proc/sys/net/ipv6/conf/all/disable_ipv6")
     if out and out.strip() == "0":
         _, v6addr = run("ip -6 addr show scope global 2>/dev/null | head -3")
@@ -2215,7 +2225,7 @@ def check_ipv6():
 def check_disk_scheduler():
     if not cfg["enable_disk_scheduler"]:
         return
-    log.info("Checking disk schedulers...")
+    log_ok("Checking disk schedulers...")
     _, out = run("lsblk -dno NAME,ROTA")
     if out:
         for line in out.splitlines():
@@ -2239,7 +2249,7 @@ def check_disk_scheduler():
 def check_numa():
     if not cfg["enable_numa_balance"]:
         return
-    log.info("Checking NUMA...")
+    log_ok("Checking NUMA...")
     _, out = run("cat /proc/sys/kernel/numa_balancing 2>/dev/null")
     if out is not None:
         log.info(f"NUMA balancing: {'enabled' if out.strip() == '1' else 'disabled'}")
@@ -2251,7 +2261,7 @@ def check_numa():
 def check_hugepages():
     if not cfg["enable_hugepages_check"]:
         return
-    log.info("Checking hugepages...")
+    log_ok("Checking hugepages...")
     _, out = run("cat /proc/meminfo | grep HugePages_Total")
     if out:
         log.info(f"Hugepages: {out.strip()}")
@@ -2266,7 +2276,7 @@ def check_hugepages():
 def check_tcp_tuning():
     if not cfg["enable_tcp_tuning"]:
         return
-    log.info("Checking TCP tuning...")
+    log_ok("Checking TCP tuning...")
     tunings = {
         "net.core.rmem_max": "16777216",
         "net.core.wmem_max": "16777216",
@@ -2286,7 +2296,7 @@ def check_tcp_tuning():
 def check_io_scheduler():
     if not cfg["enable_io_scheduler_heal"]:
         return
-    log.info("Checking I/O pressure...")
+    log_ok("Checking I/O pressure...")
     if os.path.exists("/proc/pressure/io"):
         _, out = run("cat /proc/pressure/io")
         if out:
@@ -2303,7 +2313,7 @@ def check_io_scheduler():
 def check_watchdog():
     if not cfg["enable_watchdog_check"]:
         return
-    log.info("Checking watchdog...")
+    log_ok("Checking watchdog...")
     _, out = run("systemctl is-active systemd-watchdog 2>/dev/null")
     if os.path.exists("/dev/watchdog"):
         log.info("Hardware watchdog available.")
@@ -2320,7 +2330,7 @@ def check_watchdog():
 def check_acpi():
     if not cfg["enable_acpi_check"]:
         return
-    log.info("Checking ACPI...")
+    log_ok("Checking ACPI...")
     _, out = run("journalctl -b --grep='ACPI.*error\\|ACPI.*warning' --no-pager -q 2>/dev/null | tail -5")
     if out:
         log.warning(f"ACPI issues:\n{out[:300]}")
@@ -2333,7 +2343,7 @@ def check_acpi():
 def check_display_manager():
     if not cfg["enable_display_manager_heal"]:
         return
-    log.info("Checking display manager...")
+    log_ok("Checking display manager...")
     for dm in ["lightdm", "gdm3", "sddm"]:
         _, out = run(f"systemctl is-enabled {dm} 2>/dev/null")
         if out == "enabled":
@@ -2351,7 +2361,7 @@ def check_display_manager():
 def check_xdg_dirs():
     if not cfg["enable_xdg_dirs_check"]:
         return
-    log.info("Checking XDG directories...")
+    log_ok("Checking XDG directories...")
     xdg_dirs = ["Desktop", "Documents", "Downloads", "Music", "Pictures", "Videos"]
     home = os.path.expanduser("~")
     for d in xdg_dirs:
@@ -2366,7 +2376,7 @@ def check_xdg_dirs():
 # --- Systemd Timer Healing ---
 
 def check_systemd_timers():
-    log.info("Checking systemd timers...")
+    log_ok("Checking systemd timers...")
     _, out = run("systemctl list-timers --failed --no-legend --no-pager 2>/dev/null")
     if out:
         log.warning(f"Failed timers:\n{out[:300]}")
@@ -2381,7 +2391,7 @@ def check_systemd_timers():
 # --- Performance Governor ---
 
 def check_cpu_governor():
-    log.info("Checking CPU governor...")
+    log_ok("Checking CPU governor...")
     _, out = run("cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null")
     if out:
         log.info(f"CPU governor: {out.strip()}")
@@ -2391,7 +2401,7 @@ def check_cpu_governor():
 # --- Kernel Live Patch ---
 
 def check_kernel_livepatch():
-    log.info("Checking kernel livepatch...")
+    log_ok("Checking kernel livepatch...")
     _, out = run("canonical-livepatch status 2>/dev/null")
     if out and "running" in out.lower():
         log.info("Livepatch active.")
@@ -2401,7 +2411,7 @@ def check_kernel_livepatch():
 # --- Disk Read-Ahead ---
 
 def check_disk_readahead():
-    log.info("Checking disk read-ahead...")
+    log_ok("Checking disk read-ahead...")
     _, out = run("lsblk -dno NAME,ROTA | awk '$2==0{print $1}'")
     if out:
         for disk in out.splitlines():
@@ -2420,7 +2430,7 @@ def check_disk_readahead():
 # --- Kernel Printk Level ---
 
 def check_printk_level():
-    log.info("Checking printk level...")
+    log_ok("Checking printk level...")
     _, out = run("cat /proc/sys/kernel/printk")
     if out:
         level = out.split()[0] if out.split() else "0"
@@ -2432,7 +2442,7 @@ def check_printk_level():
 # --- Systemd Journal Rate Limit ---
 
 def check_journal_rate_limit():
-    log.info("Checking journal rate limit...")
+    log_ok("Checking journal rate limit...")
     _, out = run("journalctl --since '1 min ago' --no-pager -q 2>/dev/null | wc -l")
     if out and out.isdigit() and int(out) > 5000:
         log.warning(f"Journal flooding: {out} msgs/min!")
@@ -2442,7 +2452,7 @@ def check_journal_rate_limit():
 # --- Zombie Thread Check ---
 
 def check_zombie_threads():
-    log.info("Checking zombie threads...")
+    log_ok("Checking zombie threads...")
     _, out = run("find /proc/*/task/*/status -maxdepth 0 2>/dev/null | xargs grep -l 'State.*Z' 2>/dev/null | wc -l")
     if out and out.isdigit() and int(out) > 10:
         log.warning(f"{out} zombie threads found!")
@@ -2452,7 +2462,7 @@ def check_zombie_threads():
 # --- Kernel Taint Check ---
 
 def check_kernel_taint():
-    log.info("Checking kernel taint...")
+    log_ok("Checking kernel taint...")
     _, out = run("cat /proc/sys/kernel/tainted")
     if out and out.strip() != "0":
         flags = int(out.strip())
@@ -2484,7 +2494,7 @@ def check_kernel_taint():
 # --- Swap Usage Monitor ---
 
 def check_swap_usage():
-    log.info("Checking swap usage...")
+    log_ok("Checking swap usage...")
     _, out = run("free -m | awk '/Swap/{print $3, $2}'")
     if out:
         parts = out.split()
@@ -2499,7 +2509,7 @@ def check_swap_usage():
 # --- Network Interface Errors ---
 
 def check_network_errors():
-    log.info("Checking network interface errors...")
+    log_ok("Checking network interface errors...")
     _, out = run("ip -s link show | grep -A1 'RX:' | grep -v 'RX:' | awk '{if($3>0 || $4>0) print}'")
     if out:
         log.warning("Network interface errors detected")
@@ -2512,7 +2522,7 @@ def check_network_errors():
 # --- Disk Queue Depth ---
 
 def check_disk_queue():
-    log.info("Checking disk queue depth...")
+    log_ok("Checking disk queue depth...")
     _, out = run("lsblk -dno NAME")
     if out:
         for disk in out.splitlines():
@@ -2531,7 +2541,7 @@ def check_disk_queue():
 # --- Systemd Scope Cleanup ---
 
 def check_systemd_scopes():
-    log.info("Checking systemd scopes...")
+    log_ok("Checking systemd scopes...")
     _, out = run("systemctl list-units --type=scope --state=failed --no-legend --no-pager 2>/dev/null")
     if out:
         for line in out.splitlines():
@@ -2544,7 +2554,7 @@ def check_systemd_scopes():
 # --- Login Shell Check ---
 
 def check_login_shells():
-    log.info("Checking login shells...")
+    log_ok("Checking login shells...")
     _, out = run("awk -F: '$7 !~ /(nologin|false|sync|halt|shutdown)/ && $3>=1000 {print $1, $7}' /etc/passwd")
     if out:
         for line in out.splitlines():
@@ -2559,7 +2569,7 @@ def check_login_shells():
 # --- PAM Configuration Check ---
 
 def check_pam():
-    log.info("Checking PAM...")
+    log_ok("Checking PAM...")
     _, out = run("pam-auth-update --package 2>&1 | grep -i error")
     if out:
         log.warning(f"PAM issues: {out[:200]}")
@@ -2569,7 +2579,7 @@ def check_pam():
 # --- Sudoers Validation ---
 
 def check_sudoers():
-    log.info("Checking sudoers...")
+    log_ok("Checking sudoers...")
     rc, out = run("visudo -c 2>&1")
     if rc != 0:
         log.warning(f"Sudoers syntax error:\n{out[:300]}")
@@ -2579,7 +2589,7 @@ def check_sudoers():
 # --- Systemd Slice Check ---
 
 def check_systemd_slices():
-    log.info("Checking systemd slices...")
+    log_ok("Checking systemd slices...")
     _, out = run("systemctl list-units --type=slice --state=failed --no-legend --no-pager 2>/dev/null")
     if out:
         log.warning(f"Failed slices:\n{out[:300]}")
@@ -2589,7 +2599,7 @@ def check_systemd_slices():
 # --- Kernel Memory Leak Detection ---
 
 def check_kernel_memleak():
-    log.info("Checking kernel memory...")
+    log_ok("Checking kernel memory...")
     _, out = run("cat /proc/meminfo | grep Slab")
     if out:
         match = re.search(r'(\d+)', out)
@@ -2601,7 +2611,7 @@ def check_kernel_memleak():
 # --- Inotify Watch Limit ---
 
 def check_inotify_limit():
-    log.info("Checking inotify limits...")
+    log_ok("Checking inotify limits...")
     _, out = run("cat /proc/sys/fs/inotify/max_user_watches")
     if out and out.strip().isdigit() and int(out.strip()) < 524288:
         run("sysctl -w fs.inotify.max_user_watches=524288")
@@ -2612,7 +2622,7 @@ def check_inotify_limit():
 # --- Systemd Resolved Check ---
 
 def check_resolved():
-    log.info("Checking systemd-resolved...")
+    log_ok("Checking systemd-resolved...")
     _, out = run("systemctl is-active systemd-resolved 2>/dev/null")
     if out == "failed":
         log.warning("systemd-resolved failed! Restarting...")
@@ -2628,7 +2638,7 @@ def check_resolved():
 def check_snap_refresh():
     if not shutil.which("snap"):
         return
-    log.info("Checking snap refresh...")
+    log_ok("Checking snap refresh...")
     _, out = run("snap changes 2>/dev/null | grep -i 'error\\|undone' | tail -5")
     if out:
         log.warning(f"Snap issues:\n{out}")
@@ -2638,7 +2648,7 @@ def check_snap_refresh():
 # --- Firmware Check ---
 
 def check_firmware():
-    log.info("Checking firmware...")
+    log_ok("Checking firmware...")
     if shutil.which("fwupdmgr"):
         _, out = run("fwupdmgr get-updates 2>/dev/null | head -10")
         if out and "No updates" not in out:
@@ -2649,7 +2659,7 @@ def check_firmware():
 # --- Disk Partition Table ---
 
 def check_partition_table():
-    log.info("Checking partition tables...")
+    log_ok("Checking partition tables...")
     _, out = run("fdisk -l 2>&1 | grep -i 'error\\|warning\\|bad'")
     if out:
         log.warning(f"Partition issues:\n{out[:300]}")
@@ -2659,7 +2669,7 @@ def check_partition_table():
 # --- Network Bridge Check ---
 
 def check_network_bridges():
-    log.info("Checking network bridges...")
+    log_ok("Checking network bridges...")
     _, out = run("brctl show 2>/dev/null | tail -n +2")
     if out:
         log.info(f"Bridges:\n{out}")
@@ -2669,7 +2679,7 @@ def check_network_bridges():
 # --- VPN Leak Check ---
 
 def check_vpn_leak():
-    log.info("Checking VPN...")
+    log_ok("Checking VPN...")
     _, vpn = run("ip link show | grep -E 'tun|wg|ppp'")
     if vpn:
         _, routes = run("ip route | grep default")
@@ -2681,7 +2691,7 @@ def check_vpn_leak():
 # --- Disk Alignment Check ---
 
 def check_disk_alignment():
-    log.info("Checking disk alignment...")
+    log_ok("Checking disk alignment...")
     _, out = run("lsblk -o NAME,PHY-SEC,LOG-SEC --noheadings 2>/dev/null")
     if out:
         for line in out.splitlines():
@@ -2695,7 +2705,7 @@ def check_disk_alignment():
 # --- Systemd Socket Check ---
 
 def check_systemd_sockets():
-    log.info("Checking systemd sockets...")
+    log_ok("Checking systemd sockets...")
     _, out = run("systemctl list-sockets --state=failed --no-legend --no-pager 2>/dev/null")
     if out:
         log.warning(f"Failed sockets:\n{out[:300]}")
@@ -2705,7 +2715,7 @@ def check_systemd_sockets():
 # --- Kernel Keyring Check ---
 
 def check_kernel_keyring():
-    log.info("Checking kernel keyring...")
+    log_ok("Checking kernel keyring...")
     _, out = run("cat /proc/keys 2>/dev/null | wc -l")
     if out and out.isdigit() and int(out) > 500:
         log.warning(f"Many kernel keys: {out}")
@@ -2715,7 +2725,7 @@ def check_kernel_keyring():
 # --- CPU Microcode ---
 
 def check_cpu_microcode():
-    log.info("Checking CPU microcode...")
+    log_ok("Checking CPU microcode...")
     _, out = run("journalctl -b --grep='microcode' --no-pager -q 2>/dev/null | tail -3")
     if out:
         log.info(f"Microcode: {out.splitlines()[0] if out.splitlines() else 'unknown'}")
@@ -2727,7 +2737,7 @@ def check_cpu_microcode():
 def check_efi_boot():
     if not os.path.isdir("/sys/firmware/efi"):
         return
-    log.info("Checking EFI boot...")
+    log_ok("Checking EFI boot...")
     _, out = run("efibootmgr 2>/dev/null | head -10")
     if out:
         log.info(f"EFI: {out.splitlines()[0] if out.splitlines() else 'unknown'}")
@@ -2737,7 +2747,7 @@ def check_efi_boot():
 # --- Disk TRIM Verify ---
 
 def check_trim_verify():
-    log.info("Checking TRIM support...")
+    log_ok("Checking TRIM support...")
     _, out = run("lsblk -D -o NAME,DISC-GRAN,DISC-MAX --noheadings 2>/dev/null")
     if out:
         for line in out.splitlines():
@@ -2753,7 +2763,7 @@ def check_trim_verify():
 # --- Memory ECC Check ---
 
 def check_memory_ecc():
-    log.info("Checking memory ECC...")
+    log_ok("Checking memory ECC...")
     _, out = run("edac-util -s 2>/dev/null")
     if out and "error" in out.lower():
         log.warning(f"ECC memory errors: {out}")
@@ -2766,7 +2776,7 @@ def check_memory_ecc():
 # --- Systemd Automount Check ---
 
 def check_automounts():
-    log.info("Checking automounts...")
+    log_ok("Checking automounts...")
     _, out = run("systemctl list-units --type=automount --state=failed --no-legend --no-pager 2>/dev/null")
     if out:
         log.warning(f"Failed automounts:\n{out[:300]}")
@@ -2776,7 +2786,7 @@ def check_automounts():
 # --- Network MTU Check ---
 
 def check_network_mtu():
-    log.info("Checking network MTU...")
+    log_ok("Checking network MTU...")
     _, iface = run("ip route | awk '/default/{print $5}' | head -1")
     if iface:
         _, mtu = run(f"cat /sys/class/net/{iface.strip()}/mtu 2>/dev/null")
@@ -2792,7 +2802,7 @@ def check_network_mtu():
 # --- Disk Write Cache ---
 
 def check_disk_write_cache():
-    log.info("Checking disk write cache...")
+    log_ok("Checking disk write cache...")
     _, out = run("lsblk -dno NAME")
     if out:
         for disk in out.splitlines():
@@ -2808,7 +2818,7 @@ def check_disk_write_cache():
 # --- Kernel Hung Task Check ---
 
 def check_hung_tasks():
-    log.info("Checking hung tasks...")
+    log_ok("Checking hung tasks...")
     _, out = run("journalctl -b --grep='hung_task\\|blocked for more than' --no-pager -q 2>/dev/null | tail -5")
     if out:
         log.warning(f"Hung tasks detected:\n{out[:300]}")
@@ -2821,7 +2831,7 @@ def check_hung_tasks():
 # --- Systemd Path Units ---
 
 def check_systemd_paths():
-    log.info("Checking systemd path units...")
+    log_ok("Checking systemd path units...")
     _, out = run("systemctl list-units --type=path --state=failed --no-legend --no-pager 2>/dev/null")
     if out:
         log.warning(f"Failed path units:\n{out[:300]}")
@@ -2831,7 +2841,7 @@ def check_systemd_paths():
 # --- CPU Frequency Scaling ---
 
 def check_cpu_frequency():
-    log.info("Checking CPU frequency...")
+    log_ok("Checking CPU frequency...")
     _, out = run("cat /proc/cpuinfo | grep 'cpu MHz' | head -1")
     if out:
         match = re.search(r'(\d+)', out)
@@ -2848,7 +2858,7 @@ def check_cpu_frequency():
 # --- Kernel Address Space Layout ---
 
 def check_kaslr():
-    log.info("Checking KASLR...")
+    log_ok("Checking KASLR...")
     _, out = run("cat /proc/cmdline")
     if out and "nokaslr" in out:
         log.warning("KASLR disabled! Security risk.")
@@ -2858,7 +2868,7 @@ def check_kaslr():
 # --- Systemd User Session ---
 
 def check_user_sessions():
-    log.info("Checking user sessions...")
+    log_ok("Checking user sessions...")
     _, out = run("loginctl list-sessions --no-legend 2>/dev/null")
     if out:
         sessions = len(out.splitlines())
@@ -2870,7 +2880,7 @@ def check_user_sessions():
 # --- Disk Fragmentation ---
 
 def check_disk_fragmentation():
-    log.info("Checking disk fragmentation...")
+    log_ok("Checking disk fragmentation...")
     _, out = run("mount | grep 'type ext4' | awk '{print $3}'")
     if out:
         for mp in out.splitlines():
@@ -2885,7 +2895,7 @@ def check_disk_fragmentation():
 # --- Network ARP Cache ---
 
 def check_arp_cache():
-    log.info("Checking ARP cache...")
+    log_ok("Checking ARP cache...")
     _, out = run("ip neigh show | grep -c 'STALE\\|FAILED'")
     if out and out.isdigit() and int(out) > 50:
         log.info(f"Flushing stale ARP entries ({out})")
@@ -2896,7 +2906,7 @@ def check_arp_cache():
 # --- Kernel Sysrq ---
 
 def check_sysrq():
-    log.info("Checking SysRq...")
+    log_ok("Checking SysRq...")
     _, out = run("cat /proc/sys/kernel/sysrq")
     if out and out.strip() == "0":
         run("sysctl -w kernel.sysrq=1")
@@ -2907,7 +2917,7 @@ def check_sysrq():
 # --- Disk Reservation ---
 
 def check_disk_reserved():
-    log.info("Checking disk reserved blocks...")
+    log_ok("Checking disk reserved blocks...")
     _, out = run("mount | grep 'type ext4' | awk '{print $1}'")
     if out:
         for dev in out.splitlines():
@@ -2923,7 +2933,7 @@ def check_disk_reserved():
 # --- Systemd Generator Check ---
 
 def check_systemd_generators():
-    log.info("Checking systemd generators...")
+    log_ok("Checking systemd generators...")
     _, out = run("systemd-analyze blame 2>/dev/null | head -5")
     if out:
         for line in out.splitlines():
@@ -2936,7 +2946,7 @@ def check_systemd_generators():
 # --- Network Routing Table ---
 
 def check_routing_table():
-    log.info("Checking routing table...")
+    log_ok("Checking routing table...")
     _, out = run("ip route | grep -c default")
     if out and out.isdigit():
         if int(out) == 0:
@@ -2951,7 +2961,7 @@ def check_routing_table():
 def check_smart_attributes():
     if not shutil.which("smartctl"):
         return
-    log.info("Checking SMART attributes...")
+    log_ok("Checking SMART attributes...")
     _, out = run("lsblk -dno NAME | head -3")
     if out:
         for disk in out.splitlines():
@@ -2972,7 +2982,7 @@ def check_smart_attributes():
 # --- Systemd Notify Check ---
 
 def check_systemd_notify():
-    log.info("Checking systemd notifications...")
+    log_ok("Checking systemd notifications...")
     _, out = run("systemctl list-units --state=activating --no-legend --no-pager 2>/dev/null")
     if out:
         stuck = len(out.splitlines())
@@ -2984,7 +2994,7 @@ def check_systemd_notify():
 # --- Network Firewall Rules ---
 
 def check_firewall_rules():
-    log.info("Checking firewall rules...")
+    log_ok("Checking firewall rules...")
     _, out = run("iptables -L INPUT -n --line-numbers 2>/dev/null | wc -l")
     if out and out.isdigit():
         log.info(f"Firewall INPUT rules: {int(out) - 2}")
@@ -2999,7 +3009,7 @@ def check_firewall_rules():
 def check_lvm():
     if not shutil.which("lvs"):
         return
-    log.info("Checking LVM...")
+    log_ok("Checking LVM...")
     _, out = run("lvs --noheadings 2>/dev/null")
     if out:
         for line in out.splitlines():
@@ -3014,7 +3024,7 @@ def check_lvm():
 # --- Systemd Coredump Config ---
 
 def check_coredump_config():
-    log.info("Checking coredump config...")
+    log_ok("Checking coredump config...")
     conf = "/etc/systemd/coredump.conf"
     if os.path.exists(conf):
         _, out = run(f"grep -v '^#' {conf} | grep -v '^$'")
@@ -3026,7 +3036,7 @@ def check_coredump_config():
 # --- Network Proxy Check ---
 
 def check_network_proxy():
-    log.info("Checking network proxy...")
+    log_ok("Checking network proxy...")
     for var in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"]:
         val = os.environ.get(var)
         if val:
@@ -3037,7 +3047,7 @@ def check_network_proxy():
 # --- Disk Encryption Check ---
 
 def check_disk_encryption():
-    log.info("Checking disk encryption...")
+    log_ok("Checking disk encryption...")
     _, out = run("lsblk -o NAME,TYPE,FSTYPE | grep crypt")
     if out:
         log.info(f"Encrypted volumes:\n{out}")
@@ -3049,7 +3059,7 @@ def check_disk_encryption():
 # --- Kernel Module Parameters ---
 
 def check_module_params():
-    log.info("Checking kernel module parameters...")
+    log_ok("Checking kernel module parameters...")
     _, out = run("lsmod | awk 'NR>1{print $1}' | head -20")
     if out:
         log.info(f"Loaded modules: {len(out.splitlines())}")
@@ -3059,7 +3069,7 @@ def check_module_params():
 # --- Systemd Inhibitor Check ---
 
 def check_systemd_inhibitors():
-    log.info("Checking systemd inhibitors...")
+    log_ok("Checking systemd inhibitors...")
     _, out = run("systemd-inhibit --list --no-pager 2>/dev/null")
     if out:
         inhibitors = len([x for x in out.splitlines() if x.strip() and "WHO" not in x and "inhibitor" not in x.lower()])
@@ -3071,7 +3081,7 @@ def check_systemd_inhibitors():
 # --- Network DNS Cache ---
 
 def check_dns_cache():
-    log.info("Checking DNS cache...")
+    log_ok("Checking DNS cache...")
     _, out = run("resolvectl statistics 2>/dev/null | grep -E 'Current|Cache'")
     if out:
         log.info(f"DNS cache:\n{out}")
@@ -3081,7 +3091,7 @@ def check_dns_cache():
 # --- Disk Quota Check ---
 
 def check_disk_quota():
-    log.info("Checking disk quotas...")
+    log_ok("Checking disk quotas...")
     _, out = run("repquota -a 2>/dev/null | grep -v '^#' | tail -5")
     if out:
         log.info(f"Quotas:\n{out}")
@@ -3091,7 +3101,7 @@ def check_disk_quota():
 # --- Kernel Lockdown ---
 
 def check_kernel_lockdown():
-    log.info("Checking kernel lockdown...")
+    log_ok("Checking kernel lockdown...")
     _, out = run("cat /sys/kernel/security/lockdown 2>/dev/null")
     if out:
         log.info(f"Kernel lockdown: {out.strip()}")
@@ -3101,7 +3111,7 @@ def check_kernel_lockdown():
 # --- Systemd Boot Check ---
 
 def check_systemd_boot():
-    log.info("Checking boot performance...")
+    log_ok("Checking boot performance...")
     _, out = run("systemd-analyze 2>/dev/null | head -1")
     if out:
         log.info(f"Boot: {out.strip()}")
@@ -3114,7 +3124,7 @@ def check_systemd_boot():
 # --- Network Connection Tracking ---
 
 def check_conntrack():
-    log.info("Checking connection tracking...")
+    log_ok("Checking connection tracking...")
     _, out = run("cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null")
     _, max_ct = run("cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null")
     if out and max_ct and out.strip().isdigit() and max_ct.strip().isdigit():
@@ -3129,7 +3139,7 @@ def check_conntrack():
 # --- Systemd Device Units ---
 
 def check_systemd_devices():
-    log.info("Checking systemd device units...")
+    log_ok("Checking systemd device units...")
     _, out = run("systemctl list-units --type=device --state=failed --no-legend --no-pager 2>/dev/null")
     if out:
         log.warning(f"Failed devices:\n{out[:300]}")
@@ -3139,7 +3149,7 @@ def check_systemd_devices():
 # --- Network Bonding ---
 
 def check_network_bonding():
-    log.info("Checking network bonding...")
+    log_ok("Checking network bonding...")
     if os.path.exists("/proc/net/bonding"):
         _, out = run("ls /proc/net/bonding/ 2>/dev/null")
         if out:
@@ -3153,7 +3163,7 @@ def check_network_bonding():
 # --- Disk NCQ Check ---
 
 def check_disk_ncq():
-    log.info("Checking disk NCQ...")
+    log_ok("Checking disk NCQ...")
     _, out = run("lsblk -dno NAME")
     if out:
         for disk in out.splitlines():
@@ -3169,7 +3179,7 @@ def check_disk_ncq():
 # --- Kernel Preempt ---
 
 def check_kernel_preempt():
-    log.info("Checking kernel preempt...")
+    log_ok("Checking kernel preempt...")
     _, out = run("uname -v")
     if out:
         if "PREEMPT" in out:
@@ -3182,7 +3192,7 @@ def check_kernel_preempt():
 # --- Systemd Swap Units ---
 
 def check_systemd_swap():
-    log.info("Checking systemd swap units...")
+    log_ok("Checking systemd swap units...")
     _, out = run("systemctl list-units --type=swap --state=failed --no-legend --no-pager 2>/dev/null")
     if out:
         log.warning(f"Failed swap units:\n{out[:300]}")
@@ -3192,7 +3202,7 @@ def check_systemd_swap():
 # --- Network Neighbor Table ---
 
 def check_neighbor_table():
-    log.info("Checking neighbor table...")
+    log_ok("Checking neighbor table...")
     _, out = run("cat /proc/sys/net/ipv4/neigh/default/gc_thresh3 2>/dev/null")
     if out and out.strip().isdigit() and int(out.strip()) < 4096:
         run("sysctl -w net.ipv4.neigh.default.gc_thresh3=8192")
@@ -3202,7 +3212,7 @@ def check_neighbor_table():
 # --- Disk Barrier Check ---
 
 def check_disk_barriers():
-    log.info("Checking disk barriers...")
+    log_ok("Checking disk barriers...")
     _, out = run("mount | grep ext4 | grep nobarrier")
     if out:
         log.warning("Ext4 mounted with nobarrier — data loss risk!")
@@ -3212,7 +3222,7 @@ def check_disk_barriers():
 # --- Kernel RNG ---
 
 def check_kernel_rng():
-    log.info("Checking kernel RNG...")
+    log_ok("Checking kernel RNG...")
     _, out = run("cat /sys/devices/virtual/misc/hw_random/rng_current 2>/dev/null")
     if out and out.strip() != "none":
         log.info(f"Hardware RNG: {out.strip()}")
@@ -3222,7 +3232,7 @@ def check_kernel_rng():
 # --- Systemd Target Check ---
 
 def check_systemd_targets():
-    log.info("Checking systemd targets...")
+    log_ok("Checking systemd targets...")
     _, out = run("systemctl get-default 2>/dev/null")
     if out:
         log.info(f"Default target: {out.strip()}")
@@ -3235,7 +3245,7 @@ def check_systemd_targets():
 # --- Network TCP Keepalive ---
 
 def check_tcp_keepalive():
-    log.info("Checking TCP keepalive...")
+    log_ok("Checking TCP keepalive...")
     _, out = run("cat /proc/sys/net/ipv4/tcp_keepalive_time")
     if out and out.strip().isdigit() and int(out.strip()) > 7200:
         run("sysctl -w net.ipv4.tcp_keepalive_time=600")
@@ -3247,7 +3257,7 @@ def check_tcp_keepalive():
 # --- Disk Writeback ---
 
 def check_disk_writeback():
-    log.info("Checking disk writeback...")
+    log_ok("Checking disk writeback...")
     _, out = run("cat /proc/sys/vm/dirty_ratio")
     if out and out.strip().isdigit() and int(out.strip()) > 40:
         run("sysctl -w vm.dirty_ratio=20")
@@ -3258,7 +3268,7 @@ def check_disk_writeback():
 # --- Kernel Modules Signature ---
 
 def check_module_signatures():
-    log.info("Checking module signatures...")
+    log_ok("Checking module signatures...")
     _, out = run("cat /proc/sys/kernel/modules_disabled 2>/dev/null")
     if out and out.strip() == "1":
         log.info("Module loading disabled (secure).")
@@ -3268,7 +3278,7 @@ def check_module_signatures():
 # --- Systemd Environment ---
 
 def check_systemd_environment():
-    log.info("Checking systemd environment...")
+    log_ok("Checking systemd environment...")
     _, out = run("systemctl show-environment 2>/dev/null | wc -l")
     if out and out.isdigit():
         log.info(f"Systemd env vars: {out.strip()}")
@@ -3278,7 +3288,7 @@ def check_systemd_environment():
 # --- Network IPv4 Forwarding ---
 
 def check_ip_forwarding():
-    log.info("Checking IP forwarding...")
+    log_ok("Checking IP forwarding...")
     _, out = run("cat /proc/sys/net/ipv4/ip_forward")
     if out and out.strip() == "1":
         log.info("IPv4 forwarding enabled (router mode).")
@@ -3288,7 +3298,7 @@ def check_ip_forwarding():
 # --- Disk Sector Size ---
 
 def check_disk_sector_size():
-    log.info("Checking disk sector sizes...")
+    log_ok("Checking disk sector sizes...")
     _, out = run("lsblk -dno NAME,PHY-SEC --noheadings 2>/dev/null")
     if out:
         for line in out.splitlines():
@@ -3301,7 +3311,7 @@ def check_disk_sector_size():
 # --- Kernel Panic Config ---
 
 def check_kernel_panic_config():
-    log.info("Checking kernel panic config...")
+    log_ok("Checking kernel panic config...")
     _, out = run("cat /proc/sys/kernel/panic")
     if out and out.strip() == "0":
         run("sysctl -w kernel.panic=10")
@@ -3312,7 +3322,7 @@ def check_kernel_panic_config():
 # --- Systemd Machine ID ---
 
 def check_machine_id():
-    log.info("Checking machine ID...")
+    log_ok("Checking machine ID...")
     if not os.path.exists("/etc/machine-id"):
         log.warning("Missing /etc/machine-id! Regenerating...")
         run("systemd-machine-id-setup")
@@ -3327,7 +3337,7 @@ def check_machine_id():
 # --- Network Socket Buffer ---
 
 def check_socket_buffers():
-    log.info("Checking socket buffers...")
+    log_ok("Checking socket buffers...")
     _, rmem = run("cat /proc/sys/net/core/rmem_default")
     if rmem and rmem.strip().isdigit() and int(rmem.strip()) < 262144:
         run("sysctl -w net.core.rmem_default=262144")
@@ -3340,7 +3350,7 @@ def check_socket_buffers():
 def check_disk_multipath():
     if not shutil.which("multipath"):
         return
-    log.info("Checking multipath...")
+    log_ok("Checking multipath...")
     _, out = run("multipath -ll 2>/dev/null | head -10")
     if out:
         log.info(f"Multipath:\n{out[:300]}")
@@ -3350,7 +3360,7 @@ def check_disk_multipath():
 # --- Kernel CFS Scheduler ---
 
 def check_cfs_scheduler():
-    log.info("Checking CFS scheduler...")
+    log_ok("Checking CFS scheduler...")
     _, out = run("cat /proc/sys/kernel/sched_latency_ns 2>/dev/null")
     if out:
         log.info(f"CFS latency: {out.strip()}ns")
@@ -3360,7 +3370,7 @@ def check_cfs_scheduler():
 # --- Systemd Catalog ---
 
 def check_systemd_catalog():
-    log.info("Checking systemd catalog...")
+    log_ok("Checking systemd catalog...")
     _, out = run("journalctl --update-catalog 2>&1")
     if out and "error" in out.lower():
         log.warning(f"Catalog issues: {out[:200]}")
@@ -3370,7 +3380,7 @@ def check_systemd_catalog():
 # --- Network VLAN Check ---
 
 def check_network_vlans():
-    log.info("Checking VLANs...")
+    log_ok("Checking VLANs...")
     _, out = run("ip -d link show | grep vlan")
     if out:
         log.info(f"VLANs:\n{out}")
@@ -3380,7 +3390,7 @@ def check_network_vlans():
 # --- Disk Trim Queue ---
 
 def check_trim_queue():
-    log.info("Checking TRIM queue...")
+    log_ok("Checking TRIM queue...")
     _, out = run("lsblk -dno NAME,DISC-GRAN --noheadings 2>/dev/null")
     if out:
         for line in out.splitlines():
@@ -3393,7 +3403,7 @@ def check_trim_queue():
 # --- Kernel Transparent Hugepage ---
 
 def check_thp():
-    log.info("Checking THP...")
+    log_ok("Checking THP...")
     _, out = run("cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null")
     if out:
         log.info(f"THP: {out.strip()}")
@@ -3406,7 +3416,7 @@ def check_thp():
 # --- Systemd Resolved DNSSEC ---
 
 def check_dnssec():
-    log.info("Checking DNSSEC...")
+    log_ok("Checking DNSSEC...")
     _, out = run("resolvectl dnssec 2>/dev/null | head -5")
     if out:
         log.info(f"DNSSEC: {out.splitlines()[0] if out.splitlines() else 'unknown'}")
@@ -3416,7 +3426,7 @@ def check_dnssec():
 # --- Network Wireless ---
 
 def check_wireless():
-    log.info("Checking wireless...")
+    log_ok("Checking wireless...")
     _, out = run("iwconfig 2>/dev/null | grep -E 'ESSID|Signal'")
     if out:
         log.info(f"Wireless:\n{out}")
@@ -3430,7 +3440,7 @@ def check_wireless():
 # --- Disk RAID Check ---
 
 def check_raid():
-    log.info("Checking RAID...")
+    log_ok("Checking RAID...")
     if os.path.exists("/proc/mdstat"):
         _, out = run("cat /proc/mdstat")
         if out and "md" in out:
@@ -3444,7 +3454,7 @@ def check_raid():
 # --- Kernel Seccomp ---
 
 def check_seccomp():
-    log.info("Checking seccomp...")
+    log_ok("Checking seccomp...")
     _, out = run("grep Seccomp /proc/1/status 2>/dev/null")
     if out:
         log.info(f"Init seccomp: {out.strip()}")
@@ -3454,7 +3464,7 @@ def check_seccomp():
 # --- Systemd Resolved LLMNR ---
 
 def check_llmnr():
-    log.info("Checking LLMNR...")
+    log_ok("Checking LLMNR...")
     _, out = run("resolvectl llmnr 2>/dev/null | head -3")
     if out:
         log.info(f"LLMNR: {out.splitlines()[0] if out.splitlines() else 'unknown'}")
@@ -3464,7 +3474,7 @@ def check_llmnr():
 # --- Network Namespace ---
 
 def check_network_namespaces():
-    log.info("Checking network namespaces...")
+    log_ok("Checking network namespaces...")
     _, out = run("ip netns list 2>/dev/null")
     if out:
         log.info(f"Namespaces: {out.strip()}")
@@ -3474,7 +3484,7 @@ def check_network_namespaces():
 # --- Disk Readahead Tuning ---
 
 def check_readahead_tuning():
-    log.info("Checking readahead tuning...")
+    log_ok("Checking readahead tuning...")
     _, out = run("blockdev --report 2>/dev/null | head -5")
     if out:
         log.info(f"Block devices:\n{out}")
@@ -3484,7 +3494,7 @@ def check_readahead_tuning():
 # --- Kernel Cgroup v2 ---
 
 def check_cgroup_v2():
-    log.info("Checking cgroup version...")
+    log_ok("Checking cgroup version...")
     _, out = run("stat -fc %T /sys/fs/cgroup/ 2>/dev/null")
     if out:
         if "cgroup2" in out:
@@ -3497,7 +3507,7 @@ def check_cgroup_v2():
 # --- Kernel Address Sanitizer ---
 
 def check_kasan():
-    log.info("Checking KASAN...")
+    log_ok("Checking KASAN...")
     _, out = run("journalctl -b --grep='KASAN' --no-pager -q 2>/dev/null | tail -3")
     if out:
         log.warning(f"KASAN errors:\n{out[:300]}")
@@ -3507,7 +3517,7 @@ def check_kasan():
 # --- Systemd Portable Services ---
 
 def check_portable_services():
-    log.info("Checking portable services...")
+    log_ok("Checking portable services...")
     _, out = run("portablectl list 2>/dev/null")
     if out:
         log.info(f"Portable services: {len(out.splitlines())}")
@@ -3517,7 +3527,7 @@ def check_portable_services():
 # --- Network TCP Congestion ---
 
 def check_tcp_congestion():
-    log.info("Checking TCP congestion...")
+    log_ok("Checking TCP congestion...")
     _, out = run("cat /proc/sys/net/ipv4/tcp_congestion_control")
     if out:
         algo = out.strip()
@@ -3533,7 +3543,7 @@ def check_tcp_congestion():
 # --- Disk Fstrim Log ---
 
 def check_fstrim_log():
-    log.info("Checking fstrim history...")
+    log_ok("Checking fstrim history...")
     _, out = run("journalctl -u fstrim --since '7 days ago' --no-pager -q 2>/dev/null | tail -3")
     if out:
         log.info(f"Last TRIM:\n{out}")
@@ -3543,7 +3553,7 @@ def check_fstrim_log():
 # --- Kernel Ftrace ---
 
 def check_ftrace():
-    log.info("Checking ftrace...")
+    log_ok("Checking ftrace...")
     _, out = run("cat /sys/kernel/debug/tracing/tracing_on 2>/dev/null")
     if out and out.strip() == "1":
         log.warning("Ftrace is ON — may impact performance.")
@@ -3553,7 +3563,7 @@ def check_ftrace():
 # --- Systemd Nspawn ---
 
 def check_nspawn():
-    log.info("Checking nspawn containers...")
+    log_ok("Checking nspawn containers...")
     _, out = run("machinectl list --no-legend --no-pager 2>/dev/null")
     if out:
         log.info(f"Containers: {len(out.splitlines())}")
@@ -3563,7 +3573,7 @@ def check_nspawn():
 # --- Network Neighbor Discovery ---
 
 def check_neighbor_discovery():
-    log.info("Checking IPv6 neighbor discovery...")
+    log_ok("Checking IPv6 neighbor discovery...")
     _, out = run("ip -6 neigh show 2>/dev/null | wc -l")
     if out and out.isdigit() and int(out) > 100:
         log.warning(f"Large IPv6 neighbor table: {out}")
@@ -3573,7 +3583,7 @@ def check_neighbor_discovery():
 # --- Disk Partition Alignment ---
 
 def check_partition_alignment():
-    log.info("Checking partition alignment...")
+    log_ok("Checking partition alignment...")
     _, out = run("lsblk -o NAME,START --bytes --noheadings 2>/dev/null | head -10")
     if out:
         for line in out.splitlines():
@@ -3588,7 +3598,7 @@ def check_partition_alignment():
 # --- Kernel Softlockup ---
 
 def check_softlockup():
-    log.info("Checking softlockup...")
+    log_ok("Checking softlockup...")
     _, out = run("journalctl -b --grep='soft lockup\\|softlockup' --no-pager -q 2>/dev/null | tail -3")
     if out:
         log.warning(f"Soft lockups detected:\n{out[:300]}")
@@ -3601,7 +3611,7 @@ def check_softlockup():
 # --- Systemd Resolved Stub ---
 
 def check_resolved_stub():
-    log.info("Checking resolved stub listener...")
+    log_ok("Checking resolved stub listener...")
     _, out = run("ss -tlnp | grep ':53 '")
     if out and "systemd-resolve" in out:
         log.info("Resolved stub listener active on :53")
@@ -4077,6 +4087,14 @@ def main():
     global stats
     if len(sys.argv) > 1:
         cmd = sys.argv[1]
+        # Handle --quiet flag
+        if "--quiet" in sys.argv:
+            cfg["quiet_mode"] = True
+            sys.argv.remove("--quiet")
+            if len(sys.argv) > 1:
+                cmd = sys.argv[1]
+            else:
+                cmd = None
         if cmd == "status":
             show_status()
             return
@@ -4099,7 +4117,7 @@ def main():
             else:
                 print(f"Config exists: {CONFIG_FILE}")
             return
-        print(f"Usage: {sys.argv[0]} [status|heal|quick|cleanup|config]")
+        print(f"Usage: {sys.argv[0]} [status|heal|quick|cleanup|config] [--quiet]")
         return
 
     if os.geteuid() != 0:
