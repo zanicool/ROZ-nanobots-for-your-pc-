@@ -140,9 +140,83 @@ def load_config():
     cfg = DEFAULT_CONFIG.copy()
     try:
         with open(CONFIG_FILE) as f:
-            cfg.update(json.load(f))
+            user_cfg = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        pass
+        user_cfg = {}
+
+    # --- Module-based config support (#12) ---
+    # If user config has "modules" dict, expand it into flat enable_ flags
+    modules = user_cfg.pop("modules", None)
+    profiles = user_cfg.pop("profiles", None)
+    profile = user_cfg.get("profile", None)
+
+    # Apply profile overrides first
+    if profile and profiles and profile in profiles:
+        profile_cfg = profiles[profile]
+        # Handle "modules_enabled" shorthand (only listed modules are active)
+        if "modules_enabled" in profile_cfg:
+            enabled_list = profile_cfg.pop("modules_enabled")
+            if modules:
+                for mod_name, mod_cfg in modules.items():
+                    if mod_name not in enabled_list:
+                        mod_cfg["enabled"] = False
+        # Apply dotted overrides like "desktop.enabled": false
+        if modules:
+            for key, val in profile_cfg.items():
+                if "." in key:
+                    mod, field = key.split(".", 1)
+                    if mod in modules:
+                        modules[mod][field] = val
+
+    # Expand modules into flat flags
+    if modules:
+        MODULE_FLAG_MAP = {
+            "network": ["enable_network_intrusion", "enable_arp_spoof_detect",
+                        "enable_dns_leak_check", "enable_network_speed",
+                        "enable_mac_spoof_detect"],
+            "storage": ["enable_smart", "enable_disk_smart_selftest",
+                        "enable_disk_latency", "enable_disk_scheduler",
+                        "enable_failed_mount_retry"],
+            "docker": ["enable_docker"],
+            "desktop": ["enable_xorg_heal", "enable_audio_heal",
+                        "enable_bluetooth_heal", "enable_display_manager_heal",
+                        "enable_screen_lock", "enable_font_heal"],
+            "security": ["enable_security", "enable_firewall_check",
+                         "enable_ssh_harden", "enable_permission_heal",
+                         "enable_rootkit_check", "enable_config_watchdog",
+                         "enable_apparmor_check"],
+            "hardware": ["enable_usb_monitor", "enable_battery",
+                         "enable_fan_monitor", "enable_lid_switch",
+                         "enable_acpi_check"],
+            "system": ["enable_updates", "enable_time_sync",
+                       "enable_kernel_module_check", "enable_sysctl_heal",
+                       "enable_cron_heal", "enable_tmpfiles"],
+        }
+        for mod_name, mod_cfg in modules.items():
+            if not isinstance(mod_cfg, dict):
+                continue
+            mod_enabled = mod_cfg.get("enabled", True)
+            if not mod_enabled:
+                # Disable all flags in this module
+                for flag in MODULE_FLAG_MAP.get(mod_name, []):
+                    user_cfg.setdefault(flag, False)
+            # Apply individual sub-settings
+            for sub_key, sub_val in mod_cfg.items():
+                if sub_key == "enabled":
+                    continue
+                # Map known sub-keys to config values
+                if sub_key == "warn_pct":
+                    user_cfg.setdefault("disk_warn_pct", sub_val)
+                elif sub_key == "crit_pct":
+                    user_cfg.setdefault("disk_crit_pct", sub_val)
+                else:
+                    # Try to find matching enable_ flag
+                    flag_name = f"enable_{sub_key}"
+                    if flag_name in DEFAULT_CONFIG:
+                        user_cfg.setdefault(flag_name, sub_val)
+
+    # Apply remaining user config over defaults
+    cfg.update(user_cfg)
     return cfg
 
 
@@ -4220,6 +4294,134 @@ def show_cleanup():
         print(f"  {G}Freed {freed // 2**20}MB{Z}")
 
 
+def _migrate_config(old_cfg):
+    """Convert flat enable_ flags config to grouped module format."""
+    GROUPS = {
+        "network": {
+            "flags": ["enable_network_intrusion", "enable_arp_spoof_detect",
+                      "enable_dns_leak_check", "enable_network_speed",
+                      "enable_mac_spoof_detect"],
+            "keys": {"intrusion_detection": "enable_network_intrusion",
+                     "arp_spoof_detect": "enable_arp_spoof_detect",
+                     "dns_leak_check": "enable_dns_leak_check",
+                     "speed_check": "enable_network_speed",
+                     "mac_spoof_detect": "enable_mac_spoof_detect"},
+        },
+        "storage": {
+            "flags": ["enable_smart", "enable_disk_smart_selftest",
+                      "enable_disk_latency", "enable_disk_scheduler",
+                      "enable_failed_mount_retry"],
+            "keys": {"smart": "enable_smart",
+                     "smart_selftest": "enable_disk_smart_selftest",
+                     "disk_latency": "enable_disk_latency",
+                     "disk_scheduler": "enable_disk_scheduler",
+                     "failed_mount_retry": "enable_failed_mount_retry"},
+        },
+        "docker": {
+            "flags": ["enable_docker"],
+            "keys": {},
+        },
+        "desktop": {
+            "flags": ["enable_xorg_heal", "enable_audio_heal",
+                      "enable_bluetooth_heal", "enable_display_manager_heal",
+                      "enable_screen_lock", "enable_font_heal"],
+            "keys": {"xorg": "enable_xorg_heal", "audio": "enable_audio_heal",
+                     "bluetooth": "enable_bluetooth_heal",
+                     "display_manager": "enable_display_manager_heal",
+                     "screen_lock": "enable_screen_lock",
+                     "font": "enable_font_heal"},
+        },
+        "security": {
+            "flags": ["enable_security", "enable_firewall_check",
+                      "enable_ssh_harden", "enable_permission_heal",
+                      "enable_rootkit_check", "enable_config_watchdog",
+                      "enable_apparmor_check"],
+            "keys": {"firewall": "enable_firewall_check",
+                     "ssh_harden": "enable_ssh_harden",
+                     "permission_heal": "enable_permission_heal",
+                     "rootkit_check": "enable_rootkit_check",
+                     "config_watchdog": "enable_config_watchdog",
+                     "apparmor": "enable_apparmor_check"},
+        },
+        "hardware": {
+            "flags": ["enable_usb_monitor", "enable_battery",
+                      "enable_fan_monitor", "enable_lid_switch",
+                      "enable_acpi_check"],
+            "keys": {"usb_monitor": "enable_usb_monitor",
+                     "battery": "enable_battery",
+                     "fan_monitor": "enable_fan_monitor",
+                     "lid_switch": "enable_lid_switch",
+                     "acpi": "enable_acpi_check"},
+        },
+        "system": {
+            "flags": ["enable_updates", "enable_time_sync",
+                      "enable_kernel_module_check", "enable_sysctl_heal",
+                      "enable_cron_heal", "enable_tmpfiles"],
+            "keys": {"updates": "enable_updates", "time_sync": "enable_time_sync",
+                     "kernel_module_check": "enable_kernel_module_check",
+                     "sysctl_heal": "enable_sysctl_heal",
+                     "cron_heal": "enable_cron_heal",
+                     "tmpfiles": "enable_tmpfiles"},
+        },
+    }
+
+    new_cfg = {}
+    consumed_keys = set()
+    modules = {}
+
+    for group_name, group_info in GROUPS.items():
+        mod = {"enabled": True}
+        all_false = True
+        for short_name, flag_name in group_info["keys"].items():
+            if flag_name in old_cfg:
+                val = old_cfg[flag_name]
+                mod[short_name] = val
+                consumed_keys.add(flag_name)
+                if val:
+                    all_false = False
+            else:
+                all_false = False
+        # If all sub-flags are false, set module enabled=false
+        if group_info["keys"] and all_false:
+            mod["enabled"] = False
+        for flag in group_info["flags"]:
+            consumed_keys.add(flag)
+        modules[group_name] = mod
+
+    # Add storage thresholds
+    if "disk_warn_pct" in old_cfg:
+        modules["storage"]["warn_pct"] = old_cfg["disk_warn_pct"]
+        consumed_keys.add("disk_warn_pct")
+    if "disk_crit_pct" in old_cfg:
+        modules["storage"]["crit_pct"] = old_cfg["disk_crit_pct"]
+        consumed_keys.add("disk_crit_pct")
+
+    new_cfg["modules"] = modules
+
+    # Preserve non-module settings
+    for key, val in old_cfg.items():
+        if key not in consumed_keys:
+            new_cfg[key] = val
+
+    # Add default profiles
+    new_cfg["profiles"] = {
+        "server": {
+            "desktop.enabled": False,
+            "hardware.battery": False,
+            "hardware.lid_switch": False,
+        },
+        "desktop": {
+            "desktop.enabled": True,
+            "hardware.battery": True,
+        },
+        "minimal": {
+            "modules_enabled": ["network", "storage", "system"],
+        },
+    }
+
+    return new_cfg
+
+
 def main():
     global stats
     if len(sys.argv) > 1:
@@ -4247,6 +4449,18 @@ def main():
             return
         if cmd == "config":
             os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+            # Handle --migrate flag to convert flat config to module-based
+            if "--migrate" in sys.argv:
+                if not os.path.exists(CONFIG_FILE):
+                    print(f"No config file at {CONFIG_FILE}")
+                    return
+                with open(CONFIG_FILE) as f:
+                    old_cfg = json.load(f)
+                new_cfg = _migrate_config(old_cfg)
+                with open(CONFIG_FILE, "w") as f:
+                    json.dump(new_cfg, f, indent=2)
+                print(f"Config migrated to module format: {CONFIG_FILE}")
+                return
             if not os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE, "w") as f:
                     json.dump(DEFAULT_CONFIG, f, indent=2)
