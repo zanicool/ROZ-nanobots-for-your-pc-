@@ -45,6 +45,30 @@ main (protected — no direct commits)
 4. Open a PR — CI runs automatically
 5. Bump `VERSION` before merging to main (CI enforces this)
 
+### Branch protection
+
+Direct commits to `main` are blocked at two levels:
+
+1. **Pre-commit hook** — installed via `make install`, stops you locally before the commit happens
+2. **CI checks** — PRs must pass all checks before merging
+
+The pre-commit hook checks if you're on `main` and exits with an error:
+
+```sh
+branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+if [ "$branch" = "main" ]; then
+    echo "ERROR: direct commits to main are not allowed."
+    exit 1
+fi
+```
+
+If you accidentally committed on main, use:
+```bash
+git reset --soft HEAD~1          # undo commit, keep changes
+git checkout -b feat/my-fix      # move to a branch
+git commit -m "my fix"           # recommit on the branch
+```
+
 ## Why so many checks?
 
 This project is built with AI assistance. AI generates plausible-looking code that can be subtly wrong, unnecessarily complex, or insecure. The checks enforce a baseline that keeps the code maintainable regardless of who (or what) wrote it:
