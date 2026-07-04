@@ -162,6 +162,21 @@ logging.basicConfig(
 )
 log = logging.getLogger("nanobot")
 
+
+# --- Journal Summary Helper (#9) ---
+
+def log_journal_summary(output, top_n=5):
+    """Group journal lines by source and log a summary."""
+    counts = {}
+    for line in output.splitlines():
+        parts = line.split()
+        # journalctl format: date time host source[pid]: message
+        source = parts[4].split('[')[0] if len(parts) > 4 else 'unknown'
+        counts[source] = counts.get(source, 0) + 1
+    for source, count in sorted(counts.items(), key=lambda x: -x[1])[:top_n]:
+        log.warning(f'  {count}x {source}')
+
+
 # --- Stats ---
 
 def load_stats():
@@ -446,7 +461,8 @@ def check_filesystems():
 
     _, out = run("journalctl -b -p err --grep='EXT4-fs\\|XFS\\|filesystem\\|I/O error' --no-pager -q 2>/dev/null | tail -10")
     if out:
-        log.warning(f"FS errors:\n{out}")
+        log.warning(f"{len(out.splitlines())} filesystem journal errors found:")
+        log_journal_summary(out)
         run("touch /forcefsck")
         track("fs_errors_caught")
     else:
@@ -611,7 +627,8 @@ def check_oom():
     log.info("Checking OOM events...")
     _, out = run("journalctl -b --grep='Out of memory\\|oom-kill\\|invoked oom-killer' --no-pager -q 2>/dev/null | tail -5")
     if out:
-        log.warning(f"OOM events:\n{out}")
+        log.warning(f"{len(out.splitlines())} OOM events found:")
+        log_journal_summary(out)
         run("sysctl -w vm.min_free_kbytes=65536 2>/dev/null")
         run("sysctl -w vm.overcommit_memory=1 2>/dev/null")
         track("memory_clears")
@@ -837,7 +854,8 @@ def check_kernel_panics():
     log.info("Checking kernel panics...")
     _, out = run("journalctl -k -p emerg,alert,crit --since '1 hour ago' --no-pager -q 2>/dev/null")
     if out:
-        log.warning(f"Critical kernel messages:\n{out[:500]}")
+        log.warning(f"{len(out.splitlines())} critical kernel messages found:")
+        log_journal_summary(out)
         run("touch /forcefsck")
         track("kernel_repairs")
     else:
