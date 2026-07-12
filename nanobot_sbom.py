@@ -423,6 +423,7 @@ def _load_device_registry() -> Dict[str, Dict[str, Any]]:
     """Load all registered devices from devices directory.
 
     Returns dict keyed by MAC address (lowercase).
+    Handles both flat format (auto-discovered) and full schema format.
     """
     devices: Dict[str, Dict[str, Any]] = {}
     devices_dir = Path(_get_cfg()["devices_dir"])
@@ -434,13 +435,29 @@ def _load_device_registry() -> Dict[str, Dict[str, Any]]:
             continue
         try:
             with open(df, "r") as f:
-                dev = json.load(f)
-            mac = dev.get("mac", "").lower()
-            if mac:
-                dev["_file"] = str(df)
-                devices[mac] = dev
+                data = json.load(f)
+            data["_file"] = str(df)
+
+            # Full schema format: {"schema_version": 1, "device": {...}}
+            if "device" in data:
+                dev = data["device"]
+                macs = dev.get("hardware", {}).get("mac_addresses", [])
+                for mac in macs:
+                    mac_lower = mac.lower().strip()
+                    if mac_lower and mac_lower != "unknown":
+                        devices[mac_lower] = data
+                # Also index by device ID for lookup without MAC
+                dev_id = dev.get("id", "")
+                if dev_id:
+                    devices[f"_id:{dev_id}"] = data
+            # Flat format (auto-discovered): {"mac": "...", "ip": "...", ...}
+            elif "mac" in data:
+                mac = data["mac"].lower().strip()
+                if mac:
+                    devices[mac] = data
         except (json.JSONDecodeError, OSError):
             pass
+
     return devices
 
 
@@ -1461,13 +1478,44 @@ def _print_devices_list() -> None:
 
     # Registered devices
     registry = _load_device_registry()
-    if registry:
+    # Filter out _id: keys (duplicates) for display
+    display_devs = {k: v for k, v in registry.items() if not k.startswith("_id:")}
+    # Also collect devices that only have _id: entries (no MAC)
+    id_only = {k: v for k, v in registry.items() if k.startswith("_id:")}
+    shown_ids = set()
+    if display_devs or id_only:
         print("\n  [Registered Devices]")
-        for mac, dev in sorted(registry.items()):
-            name = dev.get("name", dev.get("hostname", "—"))
-            ip = dev.get("last_ip", dev.get("ip", "—"))
-            last_seen = dev.get("last_seen", "never")[:19]
-            print(f"  {mac:<20} {ip:<16} {name:<20} {last_seen}")
+        # First show devices with MACs
+        for mac, data in sorted(display_devs.items()):
+            if "device" in data:
+                dev = data["device"]
+                dev_id = dev.get("id", "")
+                if dev_id in shown_ids:
+                    continue
+                shown_ids.add(dev_id)
+                name = dev.get("name", "—")
+                ip = dev.get("network", {}).get("ip", "—") or "—"
+                dtype = dev.get("type", "")
+                print(f"  {mac:<20} {ip:<16} {name:<28} {dtype}")
+            else:
+                name = data.get("name", data.get("hostname", "—"))
+                ip = data.get("last_ip", data.get("ip", "—"))
+                last_seen = data.get("last_seen", "never")[:19]
+                print(f"  {mac:<20} {ip:<16} {name:<28} {last_seen}")
+        # Then show devices without MACs (ID-only)
+        for key, data in sorted(id_only.items()):
+            if "device" in data:
+                dev = data["device"]
+                dev_id = dev.get("id", "")
+                if dev_id in shown_ids:
+                    continue
+                shown_ids.add(dev_id)
+                name = dev.get("name", "—")
+                ip = dev.get("network", {}).get("ip", "—") or "—"
+                dtype = dev.get("type", "")
+                conn = dev.get("network", {}).get("connection", "")
+                label = dtype + (f" ({conn})" if conn and conn != "ethernet" else "")
+                print(f"  {'—':<20} {ip:<16} {name:<28} {label}")
 
     # Discovered (unregistered) devices
     discovered_dir = devices_dir / "_discovered"
@@ -1487,7 +1535,7 @@ def _print_devices_list() -> None:
                 except (json.JSONDecodeError, OSError):
                     pass
 
-    if not registry and not (discovered_dir.is_dir() and list(discovered_dir.glob("*.json"))):
+    if not display_devs and not (discovered_dir.is_dir() and list(discovered_dir.glob("*.json"))):
         print("  No devices found. Run a network scan first.")
 
     print()
