@@ -13,6 +13,19 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# --- SBOM/CMDB Module (optional) ---
+
+try:
+    from nanobot_sbom import (
+        check_network_inventory,
+        check_sbom,
+        check_cve,
+        check_firmware_versions,
+    )
+    SBOM_AVAILABLE = True
+except ImportError:
+    SBOM_AVAILABLE = False
+
 # --- Config ---
 
 CONFIG_FILE = "/etc/nanobot/config.json"
@@ -55,6 +68,7 @@ DEFAULT_CONFIG = {
     "enable_bluetooth_heal": True,
     "enable_cron_heal": True,
     "enable_tmpfiles": True,
+    "enable_sbom": False,
     "enable_antivirus": True,
     "enable_rootkit_check": True,
     "enable_desktop_heal": True,
@@ -3740,7 +3754,7 @@ def heal_full():
     global restart_counts
     restart_counts = {}
     log.info("========== ROZ NanoBots v7 — Full Heal ==========")
-    for fn in [
+    heal_functions = [
         fix_broken_packages, update_system,
         check_kernel_health, rebuild_grub,
         check_gpu, check_smart,
@@ -3839,7 +3853,16 @@ def heal_full():
         check_ftrace, check_nspawn,
         check_neighbor_discovery, check_partition_alignment,
         check_softlockup, check_resolved_stub,
-    ]:
+    ]
+    # Add SBOM/CMDB checks if module is available
+    if SBOM_AVAILABLE and cfg.get("enable_sbom", False):
+        heal_functions.extend([
+            check_network_inventory,
+            check_sbom,
+            check_cve,
+            check_firmware_versions,
+        ])
+    for fn in heal_functions:
         if shutdown_requested:
             log.info("Shutdown requested, stopping heal cycle.")
             break
@@ -3881,6 +3904,10 @@ def main():
         if cmd == "quick":
             heal_quick()
             return
+        if cmd in ("sbom", "devices") and SBOM_AVAILABLE:
+            from nanobot_sbom import handle_sbom_cli
+            handle_sbom_cli(sys.argv[1:])
+            return
         if cmd == "config":
             os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
             if not os.path.exists(CONFIG_FILE):
@@ -3890,7 +3917,7 @@ def main():
             else:
                 print(f"Config exists: {CONFIG_FILE}")
             return
-        print(f"Usage: {sys.argv[0]} [status|heal|quick|config]")
+        print(f"Usage: {sys.argv[0]} [status|heal|quick|config|sbom|devices]")
         return
 
     if os.geteuid() != 0:

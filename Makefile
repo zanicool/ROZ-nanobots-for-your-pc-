@@ -15,7 +15,8 @@ check: lint
 	@echo "All checks passed."
 
 test:
-	@echo "==> tests (none yet)"
+	@echo "==> running tests"
+	python3 -m unittest tests.test_sbom -v
 	@echo "All tests passed."
 
 ci: test check

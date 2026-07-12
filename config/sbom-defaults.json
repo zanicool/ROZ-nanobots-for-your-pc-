@@ -1,0 +1,65 @@
+{
+  "_comment": "Default SBOM module configuration. These values are used when no custom config is present.",
+
+  "enable_sbom": true,
+  "enable_cve_check": true,
+  "enable_network_discovery": true,
+  "enable_firmware_monitor": true,
+
+  "sbom_interval": 86400,
+  "cve_db_update_interval": 86400,
+  "network_scan_interval": 300,
+  "firmware_check_interval": 86400,
+
+  "cve_alert_min_severity": "medium",
+  "cve_alert_min_epss": 0.1,
+  "cve_alert_min_cvss": 7.0,
+  "cve_alert_dedup_days": 7,
+  "outdated_alert_days": 90,
+
+  "subprocess_timeout": 300,
+  "retention_days": 90,
+  "sbom_retention_days": 7,
+  "max_events_db_mb": 100,
+  "max_sbom_dir_mb": 500,
+
+  "gone_threshold_hours": 24,
+  "grype_db_max_age_hours": 48,
+
+  "scan_interface": "eth0",
+  "subnets": [],
+
+  "syft_path": "syft",
+  "grype_path": "grype",
+  "arp_scan_path": "arp-scan",
+
+  "epss_csv_url": "https://epss.cyentia.com/epss_scores-current.csv.gz",
+
+  "notifications": [],
+
+  "devices_dir": "/etc/nanobot/devices",
+  "networks_dir": "/etc/nanobot/networks",
+  "data_dir": "/etc/nanobot/data",
+  "secrets_file": "/etc/nanobot/secrets.conf",
+
+  "firmware_sources": {
+    "fwupd": true,
+    "http_api": true,
+    "manual_schedule": true
+  },
+
+  "sbom_sources": {
+    "native_packages": true,
+    "snap_packages": true,
+    "pip_packages": true,
+    "kernel_modules": true,
+    "docker_containers": true,
+    "syft_host": false
+  },
+
+  "network_discovery_methods": {
+    "arp_scan": true,
+    "mdns": true,
+    "nmap": false
+  }
+}
