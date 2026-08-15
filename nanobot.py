@@ -39,6 +39,7 @@ DEFAULT_CONFIG = {
     "enable_smart": True,
     "critical_services": ["systemd-journald", "systemd-logind", "dbus", "cron"],
     "watched_services": [],
+    "protected_processes": [],
     "max_log_size_mb": 1000,
     "disk_warn_pct": 80,
     "disk_crit_pct": 90,
@@ -714,12 +715,42 @@ def check_high_cpu():
             if len(parts) < 3:
                 continue
             pid, name, cpu = parts[0], parts[1], parts[2]
-            # Don't kill critical system processes
-            if name in ("python3", "Xorg", "gnome-shell", "kwin", "systemd",
-                        "cinnamon", "mutter", "nemo", "pulseaudio", "pipewire",
-                        "NetworkManager", "dbus-daemon", "systemd-journald",
-                        "firefox", "firefox-bin", "blender", "kiro", "kiro-cli"):
-                log.warning(f"High CPU: PID {pid} ({name}) at {cpu}% — skipping (protected).")
+            # Don't kill critical system processes or games/heavy apps
+            protected = (
+                # System
+                "python3", "Xorg", "gnome-shell", "kwin", "systemd",
+                "cinnamon", "mutter", "nemo", "pulseaudio", "pipewire",
+                "NetworkManager", "dbus-daemon", "systemd-journald",
+                # Browsers & editors
+                "firefox", "firefox-bin", "chromium", "chrome", "blender",
+                "kiro", "kiro-cli", "code", "codium",
+                # Games (commonly use 95%+ CPU)
+                "aces", "War Thunder", "warthunder",
+                "steam", "steamwebhelper", "gameoverlayui",
+                "cs2", "csgo", "dota2", "hl2_linux",
+                "java", "javaw",  # Minecraft
+                "wine", "wine-preloader", "wine64-preloader",
+                "proton", "pressure-vessel",
+                "lutris", "heroic",
+                "MangoHud", "gamemoderun", "gamescope",
+                # Compilers & builds
+                "cc1plus", "cc1", "gcc", "g++", "make", "ninja", "rustc", "cargo",
+                # ML/AI workloads
+                "python", "ollama", "llama-server",
+            )
+            # Also protect anything running under gamescope/Steam
+            if any(p in name for p in protected):
+                log.info(f"High CPU: PID {pid} ({name}) at {cpu}% — skipping (protected).")
+                continue
+            # Check if running under Steam/Proton (cgroup or parent)
+            _, cgroup = run(f"cat /proc/{pid}/cgroup 2>/dev/null")
+            if cgroup and ("steam" in cgroup.lower() or "game" in cgroup.lower()):
+                log.info(f"High CPU: PID {pid} ({name}) at {cpu}% — skipping (game session).")
+                continue
+            # Check user-defined protected processes from config
+            if any(p in name for p in cfg.get("protected_processes", [])):
+                log.info(f"High CPU: PID {pid} ({name}) at {cpu}% — skipping (user-protected).")
+                continue
                 continue
             log.warning(f"High CPU: PID {pid} ({name}) at {cpu}%")
             # Check if it's been high for more than 5 minutes
