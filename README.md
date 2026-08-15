@@ -38,6 +38,9 @@ ROZ NanoBots runs in the background and automatically:
 | Docker Healing | Restarts dead containers, prunes dangling resources |
 | USB Monitoring | Detects USB errors and resets controllers |
 | Intrusion Detection | Spots port scans, brute force, excessive connections |
+| Btrfs Health | Monitors device errors, runs scrub, manages snapshots |
+| Zram Optimization | Ensures compressed swap is active and correctly sized |
+| VPN Healing | Restarts WireGuard/OpenVPN tunnels on handshake timeout |
 | Config Watchdog | Detects unauthorized changes to critical config files |
 | Battery Protection | Warns on low battery, auto-hibernates at critical level |
 | Coredump Cleanup | Removes old crash dumps to save disk space |

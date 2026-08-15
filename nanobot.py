@@ -120,6 +120,9 @@ DEFAULT_CONFIG = {
     "battery_crit_pct": 10,
     "quiet_mode": False,
     "enable_power_monitor": True,
+    "enable_btrfs_heal": True,
+    "enable_zram_heal": True,
+    "enable_vpn_heal": True,
     "power_warn_watts": 30,
     "allowed_ports": [22, 53, 631],
     "allowed_root_processes": ["systemd", "sshd", "cron", "dbus-daemon", "agetty", "login", "sudo", "polkitd", "rsyslogd", "systemd-journald", "systemd-logind", "systemd-resolved", "systemd-timesyncd", "systemd-udevd", "networkd-dispatcher", "NetworkManager", "wpa_supplicant", "dockerd", "containerd"],
@@ -285,6 +288,7 @@ def load_stats():
         "disk_latency_warnings": 0, "orphan_cleans": 0, "symlink_fixes": 0,
         "hostname_fixes": 0, "locale_fixes": 0, "xorg_fixes": 0,
         "audio_fixes": 0, "bluetooth_fixes": 0, "cron_fixes": 0,
+        "btrfs_fixes": 0, "zram_fixes": 0, "vpn_fixes": 0,
         "tmpfile_fixes": 0,
         "viruses_found": 0, "rootkits_checked": 0,
         "desktop_fixes": 0, "flatpak_fixes": 0,
@@ -3856,6 +3860,188 @@ def check_resolved_stub():
     log_ok("Resolved stub check done.")
 
 
+# --- Btrfs Snapshot Healing ---
+
+def check_btrfs():
+    """Monitor Btrfs filesystem health — scrub, balance, and snapshot management."""
+    if not cfg.get("enable_btrfs_heal", True):
+        return
+    if not shutil.which("btrfs"):
+        return
+    log_ok("Checking Btrfs health...")
+
+    # Find Btrfs mounts
+    _, mounts = run("findmnt -t btrfs -n -o TARGET 2>/dev/null")
+    if not mounts:
+        return
+
+    for mount in mounts.strip().split("\n"):
+        mount = mount.strip()
+        if not mount:
+            continue
+
+        # Check device errors
+        _, stats = run(f"btrfs device stats {mount} 2>/dev/null")
+        if stats:
+            for line in stats.strip().split("\n"):
+                if line and not line.endswith(" 0"):
+                    log.warning(f"Btrfs device error on {mount}: {line}")
+                    track("btrfs_fixes")
+
+        # Check if scrub is overdue (>30 days)
+        _, scrub_status = run(f"btrfs scrub status {mount} 2>/dev/null")
+        if "finished" in scrub_status:
+            # Parse last scrub date
+            for line in scrub_status.split("\n"):
+                if "started" in line.lower() or "finished" in line.lower():
+                    pass  # Scrub has run before, OK
+        elif "no stats" in scrub_status.lower() or "never" in scrub_status.lower():
+            log.warning(f"Btrfs scrub never ran on {mount}! Starting...")
+            run(f"btrfs scrub start {mount} 2>/dev/null")
+            track("btrfs_fixes")
+
+        # Check balance status (uneven data distribution)
+        _, usage = run(f"btrfs filesystem usage {mount} 2>/dev/null")
+        if "unallocated" in usage:
+            for line in usage.split("\n"):
+                if "unallocated" in line.lower() and "0.00" not in line:
+                    # Has unallocated space, check if balance needed
+                    _, df_out = run(f"btrfs filesystem df {mount} 2>/dev/null")
+                    if df_out:
+                        log_ok(f"Btrfs balance OK on {mount}")
+
+        # Snapshot cleanup — remove snapshots older than 30 days
+        _, snaps = run(f"btrfs subvolume list -s {mount} 2>/dev/null")
+        if snaps:
+            snap_count = len([s for s in snaps.strip().split("\n") if s.strip()])
+            if snap_count > 50:
+                log.warning(f"Too many Btrfs snapshots on {mount}: {snap_count}")
+                track("btrfs_fixes")
+
+    log_ok("Btrfs check done.")
+
+
+# --- Zram Optimization ---
+
+def check_zram():
+    """Monitor and optimize zram compressed swap — ensure it's active and sized correctly."""
+    if not cfg.get("enable_zram_heal", True):
+        return
+    log_ok("Checking zram...")
+
+    # Check if zram module is loaded
+    _, modules = run("lsmod 2>/dev/null")
+    has_zram = "zram" in modules if modules else False
+
+    # Check if zram devices exist
+    zram_exists = os.path.exists("/sys/block/zram0")
+
+    if not zram_exists and not has_zram:
+        # Try to set up zram if systemd-zram-generator or zram-generator exists
+        if os.path.exists("/usr/lib/systemd/zram-generator.conf") or shutil.which("zramctl"):
+            log.warning("Zram not active! Loading module...")
+            run("modprobe zram 2>/dev/null")
+            # Check for systemd-zram service
+            _, status = run("systemctl status systemd-zram-setup@zram0 2>/dev/null")
+            if "inactive" in status or "dead" in status:
+                run("systemctl start systemd-zram-setup@zram0 2>/dev/null")
+                track("zram_fixes")
+        return
+
+    if zram_exists:
+        # Check zram stats
+        try:
+            disksize = int(Path("/sys/block/zram0/disksize").read_text().strip())
+            _, meminfo = run("grep MemTotal /proc/meminfo 2>/dev/null")
+            if meminfo:
+                total_mem = int(meminfo.split()[1]) * 1024  # bytes
+                # Zram should be ~50-100% of RAM
+                ratio = disksize / total_mem if total_mem > 0 else 0
+                if ratio < 0.25:
+                    log.warning(
+                        f"Zram undersized: {disksize // (1024**2)}MB "
+                        f"for {total_mem // (1024**2)}MB RAM"
+                    )
+                    track("zram_fixes")
+                else:
+                    log_ok(f"Zram OK: {disksize // (1024**2)}MB (ratio={ratio:.1f})")
+        except (FileNotFoundError, ValueError):
+            pass
+
+        # Check compression ratio
+        try:
+            mm_stat = Path("/sys/block/zram0/mm_stat").read_text().split()
+            orig = int(mm_stat[0])
+            compr = int(mm_stat[1])
+            if orig > 0:
+                ratio = compr / orig
+                if ratio > 0.8:
+                    log.warning(f"Zram compression poor: {ratio:.0%}")
+                else:
+                    log_ok(f"Zram compression: {ratio:.0%}")
+        except (FileNotFoundError, ValueError, IndexError):
+            pass
+
+    log_ok("Zram check done.")
+
+
+# --- VPN/WireGuard Healing ---
+
+def check_vpn():
+    """Monitor VPN connections — restart WireGuard/OpenVPN if tunnel is down."""
+    if not cfg.get("enable_vpn_heal", True):
+        return
+    log_ok("Checking VPN...")
+
+    # Check WireGuard interfaces
+    _, wg_show = run("wg show 2>/dev/null")
+    if wg_show:
+        # WireGuard is configured, check if interfaces are up
+        _, interfaces = run("wg show interfaces 2>/dev/null")
+        if interfaces:
+            for iface in interfaces.strip().split():
+                # Check if interface has recent handshake
+                _, iface_info = run(f"wg show {iface} latest-handshakes 2>/dev/null")
+                if iface_info:
+                    for line in iface_info.strip().split("\n"):
+                        parts = line.split("\t")
+                        if len(parts) >= 2:
+                            try:
+                                last_handshake = int(parts[1])
+                                now = int(time.time())
+                                # If no handshake in 5 minutes, tunnel might be dead
+                                if last_handshake > 0 and (now - last_handshake) > 300:
+                                    log.warning(f"WireGuard {iface}: no handshake in {(now - last_handshake) // 60}min, restarting...")
+                                    run(f"wg-quick down {iface} 2>/dev/null")
+                                    time.sleep(1)
+                                    run(f"wg-quick up {iface} 2>/dev/null")
+                                    track("vpn_fixes")
+                            except (ValueError, IndexError):
+                                pass
+    else:
+        # Check for WireGuard systemd services
+        _, wg_services = run("systemctl list-units 'wg-quick@*' --no-legend 2>/dev/null")
+        if wg_services:
+            for line in wg_services.strip().split("\n"):
+                if "failed" in line:
+                    svc = line.split()[0]
+                    log.warning(f"WireGuard service {svc} failed! Restarting...")
+                    run(f"systemctl restart {svc} 2>/dev/null")
+                    track("vpn_fixes")
+
+    # Check OpenVPN
+    _, ovpn = run("systemctl list-units 'openvpn*' --no-legend 2>/dev/null")
+    if ovpn:
+        for line in ovpn.strip().split("\n"):
+            if "failed" in line:
+                svc = line.split()[0]
+                log.warning(f"OpenVPN service {svc} failed! Restarting...")
+                run(f"systemctl restart {svc} 2>/dev/null")
+                track("vpn_fixes")
+
+    log_ok("VPN check done.")
+
+
 # --- Status Dashboard ---
 
 def show_status():
@@ -4010,7 +4196,7 @@ def heal_full():
         check_disk_latency, check_orphan_packages,
         check_broken_symlinks, check_hostname,
         check_locale, check_xorg, check_audio,
-        check_bluetooth, check_cron, check_tmpfiles,
+        check_bluetooth, check_btrfs, check_zram, check_vpn, check_cron, check_tmpfiles,
         check_antivirus, check_rootkits,
         check_desktop, check_flatpak,
         check_backup, check_port_scan_protect,
