@@ -3913,7 +3913,7 @@ def check_btrfs():
         # Snapshot cleanup — remove snapshots older than 30 days
         _, snaps = run(f"btrfs subvolume list -s {mount} 2>/dev/null")
         if snaps:
-            snap_count = len([l for l in snaps.strip().split("\n") if l.strip()])
+            snap_count = len([s for s in snaps.strip().split("\n") if s.strip()])
             if snap_count > 50:
                 log.warning(f"Too many Btrfs snapshots on {mount}: {snap_count}")
                 track("btrfs_fixes")
@@ -3951,14 +3951,17 @@ def check_zram():
     if zram_exists:
         # Check zram stats
         try:
-            disksize = int(open("/sys/block/zram0/disksize").read().strip())
+            disksize = int(Path("/sys/block/zram0/disksize").read_text().strip())
             _, meminfo = run("grep MemTotal /proc/meminfo 2>/dev/null")
             if meminfo:
                 total_mem = int(meminfo.split()[1]) * 1024  # bytes
                 # Zram should be ~50-100% of RAM
                 ratio = disksize / total_mem if total_mem > 0 else 0
                 if ratio < 0.25:
-                    log.warning(f"Zram undersized: {disksize // (1024**2)}MB for {total_mem // (1024**2)}MB RAM")
+                    log.warning(
+                        f"Zram undersized: {disksize // (1024**2)}MB "
+                        f"for {total_mem // (1024**2)}MB RAM"
+                    )
                     track("zram_fixes")
                 else:
                     log_ok(f"Zram OK: {disksize // (1024**2)}MB (ratio={ratio:.1f})")
@@ -3967,12 +3970,13 @@ def check_zram():
 
         # Check compression ratio
         try:
-            orig = int(open("/sys/block/zram0/mm_stat").read().split()[0])
-            compr = int(open("/sys/block/zram0/mm_stat").read().split()[1])
+            mm_stat = Path("/sys/block/zram0/mm_stat").read_text().split()
+            orig = int(mm_stat[0])
+            compr = int(mm_stat[1])
             if orig > 0:
                 ratio = compr / orig
                 if ratio > 0.8:
-                    log.warning(f"Zram compression poor: {ratio:.0%} (incompressible data)")
+                    log.warning(f"Zram compression poor: {ratio:.0%}")
                 else:
                     log_ok(f"Zram compression: {ratio:.0%}")
         except (FileNotFoundError, ValueError, IndexError):
