@@ -5,6 +5,15 @@ on:
   pull_request:
 
 jobs:
+  block-direct-main:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.pusher.name != 'github-actions[bot]'
+    steps:
+      - name: Block direct pushes to main
+        run: |
+          echo "::error::Direct pushes to main are not allowed. Use a feature branch and PR."
+          exit 1
+
   version-bump:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
@@ -20,6 +29,16 @@ jobs:
             echo "FAIL: VERSION file was not changed. Bump the version before merging to main."
             exit 1
           fi
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      - run: python3 -m pytest tests/ -v
 
   ruff:
     runs-on: ubuntu-latest

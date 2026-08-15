@@ -1,0 +1,23 @@
+post_install() {
+    echo "══════════════════════════════════════"
+    echo " 🤖 ROZ NanoBots installed!"
+    echo ""
+    echo " Enable and start:"
+    echo "   sudo systemctl enable --now nanobot"
+    echo ""
+    echo " Generate default config:"
+    echo "   sudo python3 /opt/nanobot/nanobot.py config"
+    echo ""
+    echo " View logs:"
+    echo "   sudo journalctl -u nanobot -f"
+    echo "══════════════════════════════════════"
+}
+
+post_upgrade() {
+    echo " 🤖 ROZ NanoBots upgraded!"
+    echo " Restart: sudo systemctl restart nanobot"
+}
+
+pre_remove() {
+    systemctl disable --now nanobot 2>/dev/null || true
+}

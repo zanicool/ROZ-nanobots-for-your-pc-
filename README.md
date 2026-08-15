@@ -1,6 +1,6 @@
 # 🤖 ROZ NanoBots v6
 
-A self-healing Linux daemon that automatically detects and fixes system issues — like Iron Man's nanobots, but for your PC.
+A self-healing Linux daemon that automatically detects and fixes system issues — nanoscale repair bots for your PC.
 
 ## What It Does
 
@@ -38,6 +38,9 @@ ROZ NanoBots runs in the background and automatically:
 | Docker Healing | Restarts dead containers, prunes dangling resources |
 | USB Monitoring | Detects USB errors and resets controllers |
 | Intrusion Detection | Spots port scans, brute force, excessive connections |
+| Btrfs Health | Monitors device errors, runs scrub, manages snapshots |
+| Zram Optimization | Ensures compressed swap is active and correctly sized |
+| VPN Healing | Restarts WireGuard/OpenVPN tunnels on handshake timeout |
 | Config Watchdog | Detects unauthorized changes to critical config files |
 | Battery Protection | Warns on low battery, auto-hibernates at critical level |
 | Coredump Cleanup | Removes old crash dumps to save disk space |
@@ -151,6 +154,13 @@ Edit `/etc/nanobot/config.json` (created on install):
 | `temp_crit_c` | `90` | Temperature critical (°C) |
 | `battery_crit_pct` | `10` | Battery critical threshold (%) |
 | `max_log_size_mb` | `1000` | Max /var/log size before rotation |
+
+## Documentation
+
+- [docs/](docs/README.md) — architecture, design diagrams, ADRs
+- [Architecture & Diagrams](docs/designs/architecture.md) — class diagram, sequence diagrams
+- [C4 Model](docs/designs/c4-diagrams.md) — system context through code level
+- [ADR-001: Module Decomposition](docs/adrs/adr-001-module-decomposition.md) — splitting the monolith
 
 ## License
 
